@@ -7,6 +7,7 @@ from backend.app.database import get_db
 from backend.app.dependencies import current_user, require_roles
 from backend.app.models import Plan, Quotation, QuotationTemplate, Subscription, User
 from backend.app.services.billing_dates import add_interval
+from backend.app.services.recurring_billing import issue_invoice_for_subscription
 
 router = APIRouter(prefix="/api/quotations", tags=["quotations"])
 templates_router = APIRouter(prefix="/api/quotation-templates", tags=["quotations"])
@@ -61,5 +62,8 @@ def activate_subscription(subscription_id: int, db: Session = Depends(get_db), _
     subscription = db.get(Subscription, subscription_id)
     if not subscription: raise HTTPException(status_code=404, detail="Subscription not found")
     if subscription.status != "confirmed": raise HTTPException(status_code=409, detail="Only confirmed subscriptions can be activated")
-    subscription.status = "active"; db.commit()
-    return {"id": subscription.id, "status": subscription.status}
+    now = datetime.now(timezone.utc)
+    subscription.status = "active"
+    invoice, _ = issue_invoice_for_subscription(db, subscription, now, now=now)
+    db.commit()
+    return {"id": subscription.id, "status": subscription.status, "invoice": {"id": invoice.id, "number": invoice.number, "amount_due": str(invoice.amount_due), "currency": invoice.currency, "status": invoice.status}}

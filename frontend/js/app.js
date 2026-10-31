@@ -82,13 +82,13 @@ const screens = {
   subscriptions:{title:'Subscriptions',subtitle:'Track customer plans, renewals, and lifecycle status.',url:'/api/subscriptions',cols:['Number','Customer','Plan','Status','Next billing'], keys:['number','customer_name','plan','status','next_billing_at']},
   customers:{title:'Customers',subtitle:'Customer accounts and billing relationships.',url:'/api/customers',cols:['ID','Name','Email','Joined','Status'],keys:['id','name','email','created_at','active']},
   staff:{title:'Staff members',subtitle:'Internal team accounts. Only admins can add staff.',url:'/api/customers/staff',cols:['ID','Name','Email','Joined','Status'],keys:['id','name','email','created_at','active']},
-  invoices:{title:'Invoices',subtitle:'Review balances, due dates, and payment status.',url:'/api/dashboard/invoices?limit=100',cols:['Invoice','Subscription','Amount','Due','Status'],keys:['number','subscription_id','amount_due','due_at','status']},
+  invoices:{title:'Invoices',subtitle:'Invoices are issued at subscription start and updated when payments are recorded.',url:'/api/dashboard/invoices?limit=100',cols:['Invoice','Subscription','Amount','Due','Status','Document'],keys:['number','subscription_id','amount_due','due_at','status']},
   products:{title:'Products',subtitle:'Manage your product catalog, variants, and pricing.',url:'/api/products',cols:['Product','Type','Sales price','Cost price','Variants'],keys:['name','product_type','sales_price','cost_price','variants']},
   taxes:{title:'Taxes',subtitle:'Tax rates applied to invoices automatically.',url:'/api/taxes',cols:['Name','Rate','Status'],keys:['name','rate_percent','is_active']},
   quotations:{title:'Quotations',subtitle:'Reusable quote templates and customer offers.',url:'/api/quotation-templates',cols:['Template','Plan ID','Validity (days)'],keys:['name','plan_id','validity_days']},
   plans:{title:'Plans',subtitle:'Set pricing and availability for recurring offers.',url:'/api/plans',cols:['Plan','Price','Interval','Minimum qty','Status'],keys:['name','price','interval','minimum_quantity','is_active']},
   discounts:{title:'Discounts',subtitle:'Manage automatic billing discounts and use limits.',url:'/api/discounts',cols:['Code','Percent','Fixed amount','Uses','Status'],keys:['code','percent_off','amount_off','usage_count','active']},
-  payments:{title:'Payments',subtitle:'Record and reconcile invoice payments.',url:'/api/dashboard/invoices?limit=100',cols:['Invoice','Subscription','Amount due','Status','Action'],keys:['number','subscription_id','amount_due','status','id']},
+   payments:{title:'Payments',subtitle:'Record payments against outstanding invoices.',url:'/api/dashboard/invoices?limit=100',cols:['Invoice','Subscription','Amount due','Status','Action'],keys:['number','subscription_id','amount_due','status','id']},
 };
 const forms = {
   plans:{label:'New plan',fields:[['name','Plan name'],['description','Description'],['price','Price (INR)','number'],['interval','Billing interval','select','daily,weekly,monthly,yearly'],['minimum_quantity','Minimum quantity','number'],['product_id','Product ID (optional)','number']]},
@@ -97,7 +97,6 @@ const forms = {
   discounts:{label:'New discount',fields:[['code','Code'],['discount_type','Discount type','select','Percentage,Fixed amount'],['percent_off','Percent off','number'],['amount_off','Fixed amount','number'],['minimum_quantity','Minimum quantity','number'],['minimum_amount','Minimum purchase','number'],['product_id','Product ID (optional)','number'],['usage_limit','Usage limit (optional)','number']]},
   subscriptions:{label:'New subscription',fields:[['plan_id','Plan ID','number'],['quantity','Quantity','number'],['customer_id','Customer ID','number'],['variant_id','Variant ID (optional)','number']]},
   invoices:{label:'Create invoice',fields:[['subscription_id','Subscription ID','number'],['discount_code','Discount code (optional)']]},
-  payments:{label:'Record payment',fields:[['invoice_id','Invoice ID','number'],['provider_reference','Reference'],['method','Method','select','cash,bank_transfer,card,upi,other'],['note','Note']]},
   quotations:{label:'New quotation template',fields:[['name','Template name'],['plan_id','Plan ID','number'],['validity_days','Validity days','number']]},
   taxes:{label:'New tax rule',fields:[['name','Tax name'],['rate_percent','Rate (%)','number']]},
   staff:{label:'New staff member',fields:[['email','Work email','email'],['full_name','Full name'],['password','Temporary password','password']]},
@@ -106,10 +105,32 @@ async function showScreen(name) {
   const config={...screens[name]}; if(!config)return;
   const role=document.body.dataset.role||'customer';
   if(name==='plans'&&role==='customer'){config.subtitle='Choose a plan to start your subscription.';config.cols=['Plan','Price','Interval','Minimum qty','Choose'];}
+  if(name==='invoices'&&role==='customer'){config.url='/api/invoices';config.subtitle='Invoices are issued when your subscription starts. Staff update the status after payment is received.';}
   if(name==='quotations'&&role==='customer'){config.url='/api/quotations';config.cols=['Quote','Plan','Status','Expires','Action'];config.keys=['number','plan','status','expires_at'];}
   document.querySelector('.main').classList.add('manage-mode');
   const root=document.querySelector('.page'); root.innerHTML=`<div class="page-heading"><div><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h1>${config.title}</h1><p class="subtitle">${config.subtitle}</p></div><button class="primary-button" id="createAction">＋ ${forms[name]?.label||'Create'}</button></div><section class="panel data-panel"><div class="panel-heading"><div><h2>${config.title}</h2><p>Live data from your workspace</p></div><input class="table-search" id="screenSearch" placeholder="Filter results" aria-label="Filter results"></div><div class="table-wrap"><table><thead><tr>${config.cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody id="screenRows"><tr><td colspan="${config.cols.length}" class="empty-cell">Loading…</td></tr></tbody></table></div></section>`;
-  try { let rows=await api(config.url); if(name==='payments')rows=rows.filter(r=>r.status!=='paid'); const render=(arr)=>{const body=document.querySelector('#screenRows');if(name==='plans'&&role==='customer'){body.innerHTML=arr.length?arr.map(plan=>`<tr><td><strong>${esc(plan.name)}</strong>${plan.description?`<small class="table-secondary">${esc(plan.description)}</small>`:''}</td><td>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${esc(plan.interval)}</td><td>${esc(plan.minimum_quantity)}</td><td><button class="select-button" data-choose-plan="${plan.id}">Choose plan</button></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No plans are available right now.</td></tr>`;body.querySelectorAll('[data-choose-plan]').forEach(button=>button.onclick=()=>showPlanSubscribeForm(rows.find(plan=>plan.id===Number(button.dataset.choosePlan))));return;}body.innerHTML=arr.length?arr.map(row=>`<tr>${config.keys.map(k=>`<td>${k==='amount_due'?currency(row[k]):k==='variants'?(row[k]||[]).map(v=>esc(v.name)).join(', '):esc(row[k]??'—')}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No ${name} to show yet.</td></tr>`;};render(rows);
+  try {
+    let rows=await api(config.url);
+    if(name==='payments')rows=rows.filter(r=>['open','confirmed'].includes(r.status));
+    const render=(arr)=>{
+      const body=document.querySelector('#screenRows');
+      if(name==='plans'&&role==='customer'){
+        body.innerHTML=arr.length?arr.map(plan=>`<tr><td><strong>${esc(plan.name)}</strong>${plan.description?`<small class="table-secondary">${esc(plan.description)}</small>`:''}</td><td>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${esc(plan.interval)}</td><td>${esc(plan.minimum_quantity)}</td><td><button class="select-button" data-choose-plan="${plan.id}">Choose plan</button></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No plans are available right now.</td></tr>`;
+        body.querySelectorAll('[data-choose-plan]').forEach(button=>button.onclick=()=>showPlanSubscribeForm(rows.find(plan=>plan.id===Number(button.dataset.choosePlan))));
+        return;
+      }
+      if(name==='invoices'){
+        body.innerHTML=arr.length?arr.map(invoice=>`<tr><td><strong>${esc(invoice.number)}</strong></td><td>${esc(invoice.subscription_id)}</td><td>${esc(invoice.currency||'INR')} ${Number(invoice.amount_due).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${invoice.due_at?new Date(invoice.due_at).toLocaleDateString('en-IN'):'—'}</td><td><span class="status-pill ${invoice.status==='paid'?'paid':'active'}">${esc(invoice.status)}${invoice.overdue?' · overdue':''}</span></td><td><a class="text-link" href="/api/invoices/${invoice.id}/print" target="_blank" rel="noopener">View / print</a></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No invoices yet. Start a subscription to receive your first invoice.</td></tr>`;
+        return;
+      }
+      if(name==='payments'){
+        body.innerHTML=arr.length?arr.map(invoice=>`<tr><td>${esc(invoice.number)}</td><td>${esc(invoice.subscription_id)}</td><td>${currency(invoice.amount_due)}</td><td><span class="status-pill active">${esc(invoice.status)}${invoice.overdue?' · overdue':''}</span></td><td><button class="select-button" data-record-payment="${invoice.id}">Record payment</button></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No outstanding invoices to reconcile.</td></tr>`;
+        body.querySelectorAll('[data-record-payment]').forEach(button=>button.onclick=()=>showPaymentForm(rows.find(invoice=>invoice.id===Number(button.dataset.recordPayment))));
+        return;
+      }
+      body.innerHTML=arr.length?arr.map(row=>`<tr>${config.keys.map(k=>`<td>${k==='amount_due'?currency(row[k]):k==='variants'?(row[k]||[]).map(v=>esc(v.name)).join(', '):esc(row[k]??'—')}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No ${name} to show yet.</td></tr>`;
+    };
+    render(rows);
     if(name==='quotations'&&role==='customer'){
       const body=document.querySelector('#screenRows');
       body.innerHTML=rows.length?rows.map(q=>`<tr><td>${esc(q.number)}</td><td>${esc(q.plan)}</td><td>${esc(q.status)}</td><td>${new Date(q.expires_at).toLocaleDateString('en-IN')}</td><td>${q.status==='quotation'?`<button class="select-button" data-accept="${q.id}">Accept offer</button>`:'—'}</td></tr>`).join(''):`<tr><td colspan="5" class="empty-cell">No offers have been sent to your account.</td></tr>`;
@@ -118,9 +139,8 @@ async function showScreen(name) {
     document.querySelector('#screenSearch').oninput=e=>render(rows.filter(r=>JSON.stringify(r).toLowerCase().includes(e.target.value.toLowerCase())));
     const create=document.querySelector('#createAction');
     const adminOnly=['products','plans','taxes','discounts','staff'].includes(name);
-    const staffOrAdmin=['invoices','payments'].includes(name);
     const customerAllowed=false;
-    const canCreate=!!forms[name]&&(role==='admin'||(role==='staff'&&!adminOnly)|| (role==='customer'&&customerAllowed));
+    const canCreate=!!forms[name]&&name!=='payments'&&(role==='admin'||(role==='staff'&&!adminOnly)|| (role==='customer'&&customerAllowed));
     create.hidden=!canCreate;
     if(forms[name]&&canCreate)create.onclick=()=>showCreateForm(name);else create.onclick=null;
   } catch(e){document.querySelector('#screenRows').innerHTML=`<tr><td colspan="${config.cols.length}" class="empty-cell">${esc(e.message)}</td></tr>`;}
@@ -128,7 +148,7 @@ async function showScreen(name) {
 function showPlanSubscribeForm(plan){
   if(!plan)return;
   const minimum=Math.max(1,Number(plan.minimum_quantity||1)), dialogEl=document.querySelector('#actionDialog');
-  dialogEl.innerHTML=`<form id="planSubscribeForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Choose ${esc(plan.name)}</h2><p>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} / ${esc(plan.interval)} per unit</p><p class="subtitle">Starts now. Billing will appear in your invoices.</p><label>Quantity (minimum ${minimum})<input name="quantity" type="number" min="${minimum}" max="10000" step="1" value="${minimum}" required></label><p class="form-error" id="planSubscribeError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Start subscription</button></form>`;
+  dialogEl.innerHTML=`<form id="planSubscribeForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Choose ${esc(plan.name)}</h2><p>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} / ${esc(plan.interval)} per unit</p><p class="subtitle">An invoice will be added to your account when you start.</p><label>Quantity (minimum ${minimum})<input name="quantity" type="number" min="${minimum}" max="10000" step="1" value="${minimum}" required></label><p class="form-error" id="planSubscribeError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Start subscription</button></form>`;
   dialogEl.showModal();
   dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close();
   dialogEl.querySelector('#planSubscribeForm').onsubmit=async event=>{
@@ -137,9 +157,26 @@ function showPlanSubscribeForm(plan){
     button.disabled=true; button.textContent='Starting…'; error.textContent='';
     try{
       const quantity=Number(new FormData(form).get('quantity'));
-      await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:plan.id,quantity})});
-      dialogEl.close(); notify('Your subscription has started.'); location.reload();
+      const result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:plan.id,quantity})});
+      dialogEl.close(); notify(`Invoice ${result.invoice.number} was added to your account.`); await showScreen('invoices');
     }catch(err){error.textContent=err.message;button.disabled=false;button.textContent='Start subscription';}
+  };
+}
+function showPaymentForm(invoice){
+  if(!invoice)return;
+  const dialogEl=document.querySelector('#actionDialog');
+  dialogEl.innerHTML=`<form id="paymentForm" class="action-form"><button class="dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow">PAYMENT</p><h2>Record payment</h2><p>${esc(invoice.number)} · ${currency(invoice.amount_due)}</p><p class="subtitle">Record the full payment received for this invoice.</p><label>Payment reference<input name="provider_reference" maxlength="120" required placeholder="Bank or provider transaction reference"></label><label>Payment method<select name="method" required><option value="">Choose a method</option><option value="bank_transfer">Bank transfer</option><option value="card">Card</option><option value="upi">UPI</option><option value="cash">Cash</option><option value="other">Other</option></select></label><label>Note<textarea name="note" maxlength="500" rows="3"></textarea></label><p class="form-error" id="paymentError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Mark invoice paid</button></form>`;
+  dialogEl.showModal();
+  dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close();
+  dialogEl.querySelector('#paymentForm').onsubmit=async event=>{
+    event.preventDefault();
+    const form=event.currentTarget, button=form.querySelector('button[type="submit"]'), error=form.querySelector('#paymentError');
+    button.disabled=true; button.textContent='Saving payment…'; error.textContent='';
+    try{
+      const payload=Object.fromEntries(new FormData(form).entries());
+      await api(`/api/invoices/${invoice.id}/payments`,{method:'POST',body:JSON.stringify(payload)});
+      dialogEl.close(); notify(`${invoice.number} is now paid.`); await showScreen('payments');
+    }catch(err){error.textContent=err.message;button.disabled=false;button.textContent='Mark invoice paid';}
   };
 }
 async function showCreateForm(name){
@@ -172,10 +209,9 @@ async function showCreateForm(name){
     else if(name==='discounts'){const type=payload.discount_type;delete payload.discount_type;payload.percent_off=type==='Percentage'?Number(payload.percent_off||0):0;payload.amount_off=type==='Fixed amount'?Number(payload.amount_off||0):0;payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.minimum_amount=Number(payload.minimum_amount||0);payload.product_id=payload.product_id?Number(payload.product_id):null;payload.usage_limit=payload.usage_limit?Number(payload.usage_limit):null;result=await api('/api/discounts',{method:'POST',body:JSON.stringify(payload)});}
     else if(name==='subscriptions')result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:Number(payload.plan_id),quantity:Number(payload.quantity||1),customer_id:payload.customer_id?Number(payload.customer_id):null,variant_id:payload.variant_id?Number(payload.variant_id):null})});
     else if(name==='quotations'){if(document.body.dataset.role==='customer')throw new Error('Customers can accept offers sent to their account.');result=await api('/api/quotation-templates',{method:'POST',body:JSON.stringify({...payload,plan_id:Number(payload.plan_id),validity_days:Number(payload.validity_days||30)})});}
-    else if(name==='payments'){const invoiceId=Number(payload.invoice_id);delete payload.invoice_id;result=await api(`/api/invoices/${invoiceId}/payments`,{method:'POST',body:JSON.stringify(payload)});}
     else if(name==='invoices')result=await api('/api/invoices',{method:'POST',body:JSON.stringify({subscription_id:Number(payload.subscription_id),discount_code:payload.discount_code||null})});
     else if(name==='staff')result=await api('/api/auth/staff',{method:'POST',body:JSON.stringify(payload)});
-    notify('Saved successfully.');dialogEl.close();await showScreen(name);
+     if(name==='subscriptions'&&result?.invoice)notify(`Invoice ${result.invoice.number} was created for ${result.plan}.`);else notify('Saved successfully.');dialogEl.close();await showScreen(name);
     }catch(err){document.querySelector('#actionError').textContent=err.message;}
   };
 }

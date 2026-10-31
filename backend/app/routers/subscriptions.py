@@ -7,6 +7,7 @@ from backend.app.database import get_db
 from backend.app.dependencies import current_user
 from backend.app.models import Plan, ProductVariant, Subscription, User
 from backend.app.services.billing_dates import add_interval
+from backend.app.services.recurring_billing import issue_invoice_for_subscription
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 class SubscriptionCreate(BaseModel):
@@ -58,9 +59,11 @@ def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=422, detail="Variant adjustment cannot make the subscription price negative")
     subscription = Subscription(customer_id=customer_id, plan_id=plan.id, variant_id=data.variant_id, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{user.id}", quantity=data.quantity, started_at=now, next_billing_at=now, current_period_end=add_interval(now, plan.interval))
     db.add(subscription)
+    db.flush()
+    invoice, _ = issue_invoice_for_subscription(db, subscription, now, now=now)
     db.commit()
     db.refresh(subscription)
-    return {"id": subscription.id, "status": subscription.status, "plan": plan.name, "current_period_end": subscription.current_period_end}
+    return {"id": subscription.id, "status": subscription.status, "plan": plan.name, "current_period_end": subscription.current_period_end, "invoice": {"id": invoice.id, "number": invoice.number, "amount_due": str(invoice.amount_due), "currency": invoice.currency, "status": invoice.status}}
 
 @router.post("/{subscription_id}/cancel")
 def cancel_subscription(subscription_id: int, data: CancellationInput | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -146,5 +149,9 @@ def renew_subscription(subscription_id: int, db: Session = Depends(get_db), user
     if available_until and now > available_until:
         raise HTTPException(status_code=409, detail="This plan is outside its renewal availability dates")
     renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=add_interval(now, previous.plan.interval), renewed_from_id=previous.id)
-    db.add(renewed); db.commit(); db.refresh(renewed)
-    return {"id": renewed.id, "number": renewed.number, "status": renewed.status}
+    db.add(renewed)
+    db.flush()
+    invoice, _ = issue_invoice_for_subscription(db, renewed, now, now=now)
+    db.commit()
+    db.refresh(renewed)
+    return {"id": renewed.id, "number": renewed.number, "status": renewed.status, "invoice": {"id": invoice.id, "number": invoice.number, "amount_due": str(invoice.amount_due), "currency": invoice.currency, "status": invoice.status}}

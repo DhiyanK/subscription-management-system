@@ -44,14 +44,15 @@ def test_registration_login_subscription_billing_flow(client):
     customer_subscription = client.post("/api/subscriptions", headers=customer_headers, json={"plan_id":1})
     assert customer_subscription.status_code == 201
     assert client.get("/api/subscriptions", headers=customer_headers).json()[0]["id"] == customer_subscription.json()["id"]
+    invoice = customer_subscription.json()["invoice"]
+    assert invoice["status"] == "open"
+    assert client.get("/api/invoices", headers=customer_headers).json()[0]["id"] == invoice["id"]
     admin_token = client.post("/api/auth/login", json={"email":"admin@example.com", "password":"StrongAdminPassword123!"}).json()["access_token"]
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
-    customer_id = client.get("/api/auth/me", headers=customer_headers).json()["id"]
-    invoice = client.post("/api/invoices", headers=admin_headers, json={"subscription_id":customer_subscription.json()["id"]})
-    assert invoice.status_code == 201
-    paid = client.post(f"/api/invoices/{invoice.json()['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
+    paid = client.post(f"/api/invoices/{invoice['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
     assert paid.status_code == 201
-    duplicate = client.post(f"/api/invoices/{invoice.json()['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
+    assert client.get("/api/invoices", headers=customer_headers).json()[0]["status"] == "paid"
+    duplicate = client.post(f"/api/invoices/{invoice['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
     assert duplicate.status_code == 409
 
 def test_role_access_is_enforced(client):
@@ -96,6 +97,9 @@ def test_catalog_discounts_and_quotation_acceptance(client):
     accepted = client.post(f"/api/quotations/{quote.json()['id']}/accept", headers={"Authorization":f"Bearer {customer_token}"})
     assert accepted.status_code == 200
     assert accepted.json()["subscription_status"] == "confirmed"
+    activated = client.post(f"/api/quotations/subscriptions/{accepted.json()['subscription_id']}/activate", headers=admin)
+    assert activated.status_code == 200
+    assert activated.json()["invoice"]["status"] == "open"
 
 def test_password_policy_rejects_weak_password(client):
     response = client.post("/api/auth/register", json={"email":"weak@example.com", "full_name":"Weak", "password":"alllowercase"})
