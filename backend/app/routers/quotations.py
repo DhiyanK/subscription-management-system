@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from backend.app.database import get_db
 from backend.app.dependencies import current_user, require_roles
 from backend.app.models import Plan, Quotation, QuotationTemplate, Subscription, User
+from backend.app.services.billing_dates import add_interval
 
 router = APIRouter(prefix="/api/quotations", tags=["quotations"])
 templates_router = APIRouter(prefix="/api/quotation-templates", tags=["quotations"])
@@ -52,7 +53,7 @@ def accept_quotation(quotation_id: int, db: Session = Depends(get_db), user: Use
     if quote.status != "quotation" or expiry < datetime.now(timezone.utc): raise HTTPException(status_code=409, detail="Quotation is no longer valid")
     quote.status = "confirmed"
     now = datetime.now(timezone.utc)
-    subscription = Subscription(customer_id=quote.customer_id, plan_id=quote.plan_id, status="confirmed", number=f"SUB-{now:%Y%m%d%H%M%S}-{quote.customer_id}", started_at=now, current_period_end=now + timedelta(days=30), next_billing_at=now)
+    subscription = Subscription(customer_id=quote.customer_id, plan_id=quote.plan_id, status="confirmed", number=f"SUB-{now:%Y%m%d%H%M%S}-{quote.customer_id}", started_at=now, current_period_end=add_interval(now, quote.plan.interval), next_billing_at=now)
     db.add(subscription); db.commit(); db.refresh(subscription)
     return {"quotation_id": quote.id, "status": quote.status, "subscription_id": subscription.id, "subscription_status": subscription.status}
 @router.post("/subscriptions/{subscription_id}/activate")

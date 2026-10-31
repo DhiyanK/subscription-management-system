@@ -1,11 +1,12 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from backend.app.database import get_db
-from backend.app.dependencies import current_user, require_roles
+from backend.app.dependencies import current_user
 from backend.app.models import Plan, ProductVariant, Subscription, User
+from backend.app.services.billing_dates import add_interval
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 class SubscriptionCreate(BaseModel):
@@ -24,7 +25,9 @@ def list_subscriptions(db: Session = Depends(get_db), user: User = Depends(curre
     return [{"id": s.id, "number": s.number, "next_billing_at": s.next_billing_at, "customer_id": s.customer_id, "customer_name": s.customer.full_name, "customer_email": s.customer.email, "plan_id": s.plan_id, "plan": s.plan.name, "status": s.status, "started_at": s.started_at, "current_period_end": s.current_period_end, "cancel_at_period_end": s.cancel_at_period_end} for s in db.scalars(query)]
 
 @router.post("", status_code=201)
-def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db), user: User = Depends(require_roles("admin", "staff"))):
+def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if user.role not in {"admin", "staff", "customer"}:
+        raise HTTPException(status_code=403, detail="This account cannot create subscriptions")
     plan = db.get(Plan, data.plan_id)
     if not plan or not plan.is_active:
         raise HTTPException(status_code=404, detail="Plan not found or inactive")
@@ -39,19 +42,21 @@ def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db),
         available_until = available_until.replace(tzinfo=timezone.utc)
     if (available_from and now < available_from) or (available_until and now > available_until):
         raise HTTPException(status_code=409, detail="Plan is not currently available")
-    months = {"daily": 1 / 30, "weekly": 7 / 30, "monthly": 1, "yearly": 12}.get(plan.interval, 1)
-    if not data.customer_id:
-        raise HTTPException(status_code=422, detail="Select a customer for this subscription")
-    customer = db.get(User, data.customer_id)
-    if not customer or customer.role != "customer":
-        raise HTTPException(status_code=404, detail="Customer not found")
-    customer_id = customer.id
+    if user.role == "customer":
+        customer_id = user.id
+    else:
+        if not data.customer_id:
+            raise HTTPException(status_code=422, detail="Select a customer for this subscription")
+        customer = db.get(User, data.customer_id)
+        if not customer or customer.role != "customer":
+            raise HTTPException(status_code=404, detail="Customer not found")
+        customer_id = customer.id
     variant = db.get(ProductVariant, data.variant_id) if data.variant_id else None
     if data.variant_id and (not variant or variant.product_id != plan.product_id):
         raise HTTPException(status_code=422, detail="Selected variant does not belong to this plan product")
     if variant and plan.price + variant.price_adjustment < 0:
         raise HTTPException(status_code=422, detail="Variant adjustment cannot make the subscription price negative")
-    subscription = Subscription(customer_id=customer_id, plan_id=plan.id, variant_id=data.variant_id, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{user.id}", quantity=data.quantity, started_at=now, next_billing_at=now, current_period_end=now + timedelta(days=max(1, int(30 * months))))
+    subscription = Subscription(customer_id=customer_id, plan_id=plan.id, variant_id=data.variant_id, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{user.id}", quantity=data.quantity, started_at=now, next_billing_at=now, current_period_end=add_interval(now, plan.interval))
     db.add(subscription)
     db.commit()
     db.refresh(subscription)
@@ -140,6 +145,6 @@ def renew_subscription(subscription_id: int, db: Session = Depends(get_db), user
         available_until = available_until.replace(tzinfo=timezone.utc)
     if available_until and now > available_until:
         raise HTTPException(status_code=409, detail="This plan is outside its renewal availability dates")
-    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=now + timedelta(days=30), renewed_from_id=previous.id)
+    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=add_interval(now, previous.plan.interval), renewed_from_id=previous.id)
     db.add(renewed); db.commit(); db.refresh(renewed)
     return {"id": renewed.id, "number": renewed.number, "status": renewed.status}

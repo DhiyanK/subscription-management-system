@@ -39,6 +39,7 @@ from backend.app.models import (
     Subscription,
     User,
 )
+from backend.app.services.billing_dates import add_interval
 
 MONEY = Decimal("0.01")
 ZERO = Decimal("0")
@@ -1430,11 +1431,6 @@ def plan_performance(
 # ---------------------------------------------------------------------------
 
 
-def _add_interval(value: datetime, interval: str) -> datetime:
-    days = {"daily": 1, "weekly": 7, "monthly": 30, "yearly": 365}.get(interval, 30)
-    return value + timedelta(days=days)
-
-
 def _forecast_groups(db: Session, filters: AnalyticsFilters, now: datetime) -> list[dict[str, Any]]:
     stmt = (
         select(
@@ -1551,7 +1547,7 @@ def forecast(db: Session, filters: AnalyticsFilters, now: datetime | None = None
                 while cursor < effective_end and guard < 400:
                     if cursor >= effective_start:
                         invoice_value += group["subtotal"] * group["count"]
-                    cursor = _add_interval(cursor, group["interval"])
+                    cursor = add_interval(cursor, group["interval"])
                     guard += 1
         months.append(
             {

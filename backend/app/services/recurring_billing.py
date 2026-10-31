@@ -1,14 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from backend.app.models import Discount, Invoice, InvoiceLine, Subscription, TaxRule
-
-
-def add_interval(value: datetime, interval: str) -> datetime:
-    days = {"daily": 1, "weekly": 7, "monthly": 30, "yearly": 365}.get(interval, 30)
-    return value + timedelta(days=days)
+from backend.app.services.billing_dates import add_interval
 
 
 def generate_due_invoices(db: Session, now: datetime | None = None) -> int:

@@ -26,7 +26,7 @@ const tokenHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem('acc
 async function api(path, options = {}) {
   const headers = { ...tokenHeaders(), ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers || {}) };
   const response = await fetch(path, { ...options, headers });
-  if (!response.ok) { const body = await response.json().catch(() => ({})); const detail=Array.isArray(body.detail)?body.detail.map(item=>item.msg||item.message||String(item)).join('; '):body.detail; throw new Error(detail || `Request failed (${response.status})`); }
+  if (!response.ok) { const body = await response.json().catch(() => ({})); const detail=Array.isArray(body.detail)?body.detail.map(item=>item.msg||item.message||String(item)).join('; '):body.detail; const error=new Error(detail || `Request failed (${response.status})`); error.status=response.status; throw error; }
   return response.status === 204 ? null : response.json();
 }
 async function loadWorkspace() {
@@ -94,7 +94,7 @@ const forms = {
   plans:{label:'New plan',fields:[['name','Plan name'],['description','Description'],['price','Price (INR)','number'],['interval','Billing interval','select','daily,weekly,monthly,yearly'],['minimum_quantity','Minimum quantity','number'],['product_id','Product ID (optional)','number']]},
   products:{label:'New product',fields:[['name','Product name'],['product_type','Type','select','service,goods,digital'],['sales_price','Sales price','number'],['cost_price','Cost price','number'],['notes','Notes']]},
   taxes:{label:'New tax rule',fields:[['name','Tax name'],['rate_percent','Rate (%)','number']]},
-  discounts:{label:'New discount',fields:[['code','Code'],['percent_off','Percent off (0 if fixed)','number'],['amount_off','Fixed amount (0 if percent)','number'],['minimum_quantity','Minimum quantity','number'],['minimum_amount','Minimum purchase','number'],['product_id','Product ID (optional)','number'],['usage_limit','Usage limit (optional)','number']]},
+  discounts:{label:'New discount',fields:[['code','Code'],['discount_type','Discount type','select','Percentage,Fixed amount'],['percent_off','Percent off','number'],['amount_off','Fixed amount','number'],['minimum_quantity','Minimum quantity','number'],['minimum_amount','Minimum purchase','number'],['product_id','Product ID (optional)','number'],['usage_limit','Usage limit (optional)','number']]},
   subscriptions:{label:'New subscription',fields:[['plan_id','Plan ID','number'],['quantity','Quantity','number'],['customer_id','Customer ID','number'],['variant_id','Variant ID (optional)','number']]},
   invoices:{label:'Create invoice',fields:[['subscription_id','Subscription ID','number'],['discount_code','Discount code (optional)']]},
   payments:{label:'Record payment',fields:[['invoice_id','Invoice ID','number'],['provider_reference','Reference'],['method','Method','select','cash,bank_transfer,card,upi,other'],['note','Note']]},
@@ -105,10 +105,11 @@ const forms = {
 async function showScreen(name) {
   const config={...screens[name]}; if(!config)return;
   const role=document.body.dataset.role||'customer';
+  if(name==='plans'&&role==='customer'){config.subtitle='Choose a plan to start your subscription.';config.cols=['Plan','Price','Interval','Minimum qty','Choose'];}
   if(name==='quotations'&&role==='customer'){config.url='/api/quotations';config.cols=['Quote','Plan','Status','Expires','Action'];config.keys=['number','plan','status','expires_at'];}
   document.querySelector('.main').classList.add('manage-mode');
   const root=document.querySelector('.page'); root.innerHTML=`<div class="page-heading"><div><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h1>${config.title}</h1><p class="subtitle">${config.subtitle}</p></div><button class="primary-button" id="createAction">＋ ${forms[name]?.label||'Create'}</button></div><section class="panel data-panel"><div class="panel-heading"><div><h2>${config.title}</h2><p>Live data from your workspace</p></div><input class="table-search" id="screenSearch" placeholder="Filter results" aria-label="Filter results"></div><div class="table-wrap"><table><thead><tr>${config.cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody id="screenRows"><tr><td colspan="${config.cols.length}" class="empty-cell">Loading…</td></tr></tbody></table></div></section>`;
-  try { let rows=await api(config.url); if(name==='payments')rows=rows.filter(r=>r.status!=='paid'); const render=(arr)=>{document.querySelector('#screenRows').innerHTML=arr.length?arr.map(row=>`<tr>${config.keys.map(k=>`<td>${k==='amount_due'?currency(row[k]):k==='variants'?(row[k]||[]).map(v=>esc(v.name)).join(', '):esc(row[k]??'—')}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No ${name} to show yet.</td></tr>`;};render(rows);
+  try { let rows=await api(config.url); if(name==='payments')rows=rows.filter(r=>r.status!=='paid'); const render=(arr)=>{const body=document.querySelector('#screenRows');if(name==='plans'&&role==='customer'){body.innerHTML=arr.length?arr.map(plan=>`<tr><td><strong>${esc(plan.name)}</strong>${plan.description?`<small class="table-secondary">${esc(plan.description)}</small>`:''}</td><td>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${esc(plan.interval)}</td><td>${esc(plan.minimum_quantity)}</td><td><button class="select-button" data-choose-plan="${plan.id}">Choose plan</button></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No plans are available right now.</td></tr>`;body.querySelectorAll('[data-choose-plan]').forEach(button=>button.onclick=()=>showPlanSubscribeForm(rows.find(plan=>plan.id===Number(button.dataset.choosePlan))));return;}body.innerHTML=arr.length?arr.map(row=>`<tr>${config.keys.map(k=>`<td>${k==='amount_due'?currency(row[k]):k==='variants'?(row[k]||[]).map(v=>esc(v.name)).join(', '):esc(row[k]??'—')}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No ${name} to show yet.</td></tr>`;};render(rows);
     if(name==='quotations'&&role==='customer'){
       const body=document.querySelector('#screenRows');
       body.innerHTML=rows.length?rows.map(q=>`<tr><td>${esc(q.number)}</td><td>${esc(q.plan)}</td><td>${esc(q.status)}</td><td>${new Date(q.expires_at).toLocaleDateString('en-IN')}</td><td>${q.status==='quotation'?`<button class="select-button" data-accept="${q.id}">Accept offer</button>`:'—'}</td></tr>`).join(''):`<tr><td colspan="5" class="empty-cell">No offers have been sent to your account.</td></tr>`;
@@ -124,6 +125,23 @@ async function showScreen(name) {
     if(forms[name]&&canCreate)create.onclick=()=>showCreateForm(name);else create.onclick=null;
   } catch(e){document.querySelector('#screenRows').innerHTML=`<tr><td colspan="${config.cols.length}" class="empty-cell">${esc(e.message)}</td></tr>`;}
 }
+function showPlanSubscribeForm(plan){
+  if(!plan)return;
+  const minimum=Math.max(1,Number(plan.minimum_quantity||1)), dialogEl=document.querySelector('#actionDialog');
+  dialogEl.innerHTML=`<form id="planSubscribeForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Choose ${esc(plan.name)}</h2><p>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} / ${esc(plan.interval)} per unit</p><p class="subtitle">Starts now. Billing will appear in your invoices.</p><label>Quantity (minimum ${minimum})<input name="quantity" type="number" min="${minimum}" max="10000" step="1" value="${minimum}" required></label><p class="form-error" id="planSubscribeError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Start subscription</button></form>`;
+  dialogEl.showModal();
+  dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close();
+  dialogEl.querySelector('#planSubscribeForm').onsubmit=async event=>{
+    event.preventDefault();
+    const form=event.currentTarget, button=form.querySelector('button[type="submit"]'), error=document.querySelector('#planSubscribeError');
+    button.disabled=true; button.textContent='Starting…'; error.textContent='';
+    try{
+      const quantity=Number(new FormData(form).get('quantity'));
+      await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:plan.id,quantity})});
+      dialogEl.close(); notify('Your subscription has started.'); location.reload();
+    }catch(err){error.textContent=err.message;button.disabled=false;button.textContent='Start subscription';}
+  };
+}
 async function showCreateForm(name){
   let form=forms[name];
   if(name==='products')form.fields=[...form.fields,['variant_name','First variant (optional)'],['price_adjustment','Variant price adjustment','number']];
@@ -135,12 +153,23 @@ async function showCreateForm(name){
     form={...form,fields:[['plan_id','Plan','select',planOptions],['customer_id','Customer','select',customerOptions],['quantity','Quantity','number'],['variant_id','Product variant (optional)','select',variantOptions]]};
   }
   const dialogEl=document.querySelector('#actionDialog');
-  dialogEl.innerHTML=`<form id="actionForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h2>${form.label}</h2>${form.fields.map(([key,label,type='text',opts])=>`<label>${label}${type==='select'?`<select name="${key}">${opts.includes('::')?opts.split(';').map(item=>{const [value,...label]=item.split('::');return `<option value="${esc(value)}">${esc(label.join('::'))}</option>`}).join(''):opts.split(',').map(v=>`<option>${esc(v)}</option>`).join('')}</select>`:`<input name="${key}" type="${type}" ${type==='number'?'step="0.01" min="0"':''} ${['name','price','email','plan_id','customer_id','quantity','code'].includes(key)?'required':''}>`}</label>`).join('')}<p class="form-error" id="actionError"></p><button class="primary-button" type="submit">Save</button></form>`;dialogEl.showModal();
+  dialogEl.innerHTML=`<form id="actionForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h2>${form.label}</h2><p class="form-error" id="actionError" role="alert" aria-live="polite"></p>${form.fields.map(([key,label,type='text',opts])=>`<label${name==='discounts'?` data-field="${key}"`:''}>${label}${type==='select'?`<select name="${key}">${opts.includes('::')?opts.split(';').map(item=>{const [value,...label]=item.split('::');return `<option value="${esc(value)}">${esc(label.join('::'))}</option>`}).join(''):opts.split(',').map(v=>`<option>${esc(v)}</option>`).join('')}</select>`:`<input name="${key}" type="${type}" ${type==='number'?'step="0.01" min="0"':''} ${['name','price','email','plan_id','customer_id','quantity','code'].includes(key)?'required':''}>`}</label>`).join('')}<button class="primary-button" type="submit">Save</button></form>`;dialogEl.showModal();
+  if(name==='discounts'){
+    const formElement=dialogEl.querySelector('#actionForm'), typeSelect=formElement.elements.discount_type;
+    const updateDiscountFields=()=>{
+      for(const [field,visible] of [['percent_off',typeSelect.value==='Percentage'],['amount_off',typeSelect.value==='Fixed amount']]){
+        const label=formElement.querySelector(`[data-field="${field}"]`), input=label.querySelector('input');
+        label.hidden=!visible; input.disabled=!visible; input.required=visible;
+        if(!visible)input.value='';
+      }
+    };
+    typeSelect.addEventListener('change',updateDiscountFields); updateDiscountFields();
+  }
   dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close(); dialogEl.querySelector('form').onsubmit=async e=>{e.preventDefault();const fd=new FormData(e.currentTarget),payload=Object.fromEntries(fd.entries());
     try{let result;if(name==='products'){const variant=payload.variant_name,adjustment=payload.price_adjustment;delete payload.variant_name;delete payload.price_adjustment;payload.sales_price=Number(payload.sales_price||0);payload.cost_price=Number(payload.cost_price||0);result=await api('/api/products',{method:'POST',body:JSON.stringify(payload)});if(variant)await api(`/api/products/${result.id}/variants`,{method:'POST',body:JSON.stringify({name:variant,price_adjustment:Number(adjustment||0)})});}
     else if(name==='plans'){payload.price=Number(payload.price);payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.product_id=payload.product_id?Number(payload.product_id):null;result=await api('/api/plans',{method:'POST',body:JSON.stringify(payload)});}
     else if(name==='taxes')result=await api('/api/taxes',{method:'POST',body:JSON.stringify({...payload,rate_percent:Number(payload.rate_percent)})});
-    else if(name==='discounts'){payload.percent_off=Number(payload.percent_off||0);payload.amount_off=Number(payload.amount_off||0);payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.minimum_amount=Number(payload.minimum_amount||0);payload.product_id=payload.product_id?Number(payload.product_id):null;payload.usage_limit=payload.usage_limit?Number(payload.usage_limit):null;result=await api('/api/discounts',{method:'POST',body:JSON.stringify(payload)});}
+    else if(name==='discounts'){const type=payload.discount_type;delete payload.discount_type;payload.percent_off=type==='Percentage'?Number(payload.percent_off||0):0;payload.amount_off=type==='Fixed amount'?Number(payload.amount_off||0):0;payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.minimum_amount=Number(payload.minimum_amount||0);payload.product_id=payload.product_id?Number(payload.product_id):null;payload.usage_limit=payload.usage_limit?Number(payload.usage_limit):null;result=await api('/api/discounts',{method:'POST',body:JSON.stringify(payload)});}
     else if(name==='subscriptions')result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:Number(payload.plan_id),quantity:Number(payload.quantity||1),customer_id:payload.customer_id?Number(payload.customer_id):null,variant_id:payload.variant_id?Number(payload.variant_id):null})});
     else if(name==='quotations'){if(document.body.dataset.role==='customer')throw new Error('Customers can accept offers sent to their account.');result=await api('/api/quotation-templates',{method:'POST',body:JSON.stringify({...payload,plan_id:Number(payload.plan_id),validity_days:Number(payload.validity_days||30)})});}
     else if(name==='payments'){const invoiceId=Number(payload.invoice_id);delete payload.invoice_id;result=await api(`/api/invoices/${invoiceId}/payments`,{method:'POST',body:JSON.stringify(payload)});}
@@ -163,7 +192,20 @@ document.querySelector('#resetRequestForm').addEventListener('submit',async e=>{
 document.querySelector('#resetConfirmForm').addEventListener('submit',async e=>{e.preventDefault();const token=new URLSearchParams(location.search).get('token'),password=new FormData(e.currentTarget).get('password');try{const r=await api('/api/auth/password-reset/confirm',{method:'POST',body:JSON.stringify({token,new_password:password})});document.querySelector('#resetConfirmMessage').textContent=r.message;history.replaceState({},'',location.pathname);setTimeout(()=>{document.querySelector('#resetConfirmForm').hidden=true;document.querySelector('#loginForm').hidden=false;},1200);}catch(err){document.querySelector('#resetConfirmMessage').textContent=err.message;}});
 const resetToken=new URLSearchParams(location.search).get('token');if(resetToken){document.querySelector('#loginForm').hidden=true;document.querySelector('#resetConfirmForm').hidden=false;dialog.showModal();}
 document.querySelector('#registerForm').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await api('/api/auth/register',{method:'POST',body:JSON.stringify({full_name:f.get('full_name'),email:f.get('email'),password:f.get('password')})});document.querySelector('#registerForm').hidden=true;document.querySelector('#loginForm').hidden=false;document.querySelector('#loginForm [name=email]').value=f.get('email');notify('Account created. Sign in to continue.');}catch(err){document.querySelector('#registerError').textContent=err.message;}});
-document.querySelector('#loginForm').addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{const result=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:f.get('email'),password:f.get('password')})});localStorage.setItem('access_token',result.access_token);dialog.close();location.reload();}catch{document.querySelector('#loginError').textContent='Email or password is incorrect.';}});
+document.querySelector('#loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const form=e.currentTarget, button=form.querySelector('button[type="submit"]'), errorMessage=document.querySelector('#loginError');
+  const f=new FormData(form);
+  errorMessage.textContent=''; button.disabled=true; button.textContent='Signing in…';
+  try {
+    const result=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:f.get('email'),password:f.get('password')})});
+    localStorage.setItem('access_token',result.access_token); dialog.close(); location.reload();
+  } catch(error) {
+    errorMessage.textContent=error.status===401?'Email or password is incorrect.':'Unable to reach the sign-in service. Please try again.';
+  } finally {
+    button.disabled=false; button.textContent='Sign in';
+  }
+});
 document.querySelector('#newSubscription').addEventListener('click',()=>{if(!localStorage.getItem('access_token')){dialog.showModal();return;}showScreen(document.body.dataset.role==='customer'?'plans':'subscriptions');});
 /* -------------------------------------------------------------------------
    Smart subscription analytics

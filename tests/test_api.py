@@ -41,14 +41,13 @@ def test_registration_login_subscription_billing_flow(client):
     assert registered.status_code == 201
     token = client.post("/api/auth/login", json={"email":"customer@example.com", "password":"StrongCustomerPassword123!"}).json()["access_token"]
     customer_headers = {"Authorization": f"Bearer {token}"}
-    denied = client.post("/api/subscriptions", headers=customer_headers, json={"plan_id":1})
-    assert denied.status_code == 403
+    customer_subscription = client.post("/api/subscriptions", headers=customer_headers, json={"plan_id":1})
+    assert customer_subscription.status_code == 201
+    assert client.get("/api/subscriptions", headers=customer_headers).json()[0]["id"] == customer_subscription.json()["id"]
     admin_token = client.post("/api/auth/login", json={"email":"admin@example.com", "password":"StrongAdminPassword123!"}).json()["access_token"]
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
     customer_id = client.get("/api/auth/me", headers=customer_headers).json()["id"]
-    created = client.post("/api/subscriptions", headers=admin_headers, json={"plan_id":1,"customer_id":customer_id})
-    assert created.status_code == 201
-    invoice = client.post("/api/invoices", headers=admin_headers, json={"subscription_id":created.json()["id"]})
+    invoice = client.post("/api/invoices", headers=admin_headers, json={"subscription_id":customer_subscription.json()["id"]})
     assert invoice.status_code == 201
     paid = client.post(f"/api/invoices/{invoice.json()['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
     assert paid.status_code == 201

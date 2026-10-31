@@ -561,6 +561,14 @@ def test_forecast_uses_active_schedules_and_scheduled_cancellation(analytics_env
     assert body["expected_renewals"]["count"] >= 1
 
 
+def test_analytics_forecast_uses_calendar_billing_intervals():
+    from backend.app.services.analytics import add_interval
+
+    jan_31 = datetime(2024, 1, 31, 9, 30, tzinfo=timezone.utc)
+    assert add_interval(jan_31, "monthly") == datetime(2024, 2, 29, 9, 30, tzinfo=timezone.utc)
+    assert add_interval(jan_31, "yearly") == datetime(2025, 1, 31, 9, 30, tzinfo=timezone.utc)
+
+
 def test_renew_linkage_populates_renewed_growth(analytics_env):
     env = analytics_env
     now = env.now
