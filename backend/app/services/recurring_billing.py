@@ -25,6 +25,10 @@ def generate_due_invoices(db: Session, now: datetime | None = None) -> int:
             period_end = period_end.replace(tzinfo=timezone.utc)
         if subscription.cancel_at_period_end and period_end <= now:
             subscription.status = "closed"
+            subscription.closed_at = period_end
+            subscription.cancel_at_period_end = False
+            if not subscription.cancellation_reason:
+                subscription.cancellation_reason = "unspecified"
             continue
         if subscription.plan.available_until:
             plan_end = subscription.plan.available_until
@@ -32,6 +36,10 @@ def generate_due_invoices(db: Session, now: datetime | None = None) -> int:
                 plan_end = plan_end.replace(tzinfo=timezone.utc)
             if subscription.plan.auto_close and plan_end <= now:
                 subscription.status = "closed"
+                subscription.closed_at = plan_end
+                subscription.cancel_at_period_end = False
+                if not subscription.cancellation_reason:
+                    subscription.cancellation_reason = "other"
                 continue
         period_key = billing_at.strftime("%Y-%m-%d")
         exists = db.scalar(select(Invoice.id).where(Invoice.subscription_id == subscription.id, Invoice.period_key == period_key))

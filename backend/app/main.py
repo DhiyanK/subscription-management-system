@@ -2,13 +2,14 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core import settings
-from backend.app.routers import auth, billing, catalog, customers, dashboard, discounts, plans, quotations, subscriptions
+from backend.app.routers import analytics, auth, billing, catalog, customers, dashboard, discounts, plans, quotations, subscriptions
 
 app = FastAPI(title="Brightloop Billing — Subscription Management", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Authorization", "Content-Type"])
 app.include_router(auth.router)
 app.include_router(plans.router)
 app.include_router(dashboard.router)
+app.include_router(analytics.router)
 app.include_router(subscriptions.router)
 app.include_router(billing.router)
 app.include_router(catalog.router)

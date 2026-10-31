@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.database import Base
 
@@ -70,9 +70,13 @@ class Subscription(Base):
     customer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"))
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    renewed_from_id: Mapped[int | None] = mapped_column(ForeignKey("subscriptions.id"), nullable=True, index=True)
     number: Mapped[str] = mapped_column(String(32), unique=True, index=True, default="")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     variant_id: Mapped[int | None] = mapped_column(ForeignKey("product_variants.id"), nullable=True)
@@ -109,7 +113,7 @@ class Invoice(Base):
     currency: Mapped[str] = mapped_column(String(3), default="INR")
     status: Mapped[str] = mapped_column(String(20), default="open", index=True)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     lines: Mapped[list["InvoiceLine"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
 
 class InvoiceLine(Base):
@@ -134,7 +138,7 @@ class Payment(Base):
     provider_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
     method: Mapped[str] = mapped_column(String(30), default="manual")
     note: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 class QuotationTemplate(Base):
     __tablename__ = "quotation_templates"
@@ -157,3 +161,19 @@ class Quotation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     customer: Mapped[User] = relationship()
     plan: Mapped[Plan] = relationship()
+
+class AnalyticsSnapshot(Base):
+    """Idempotent monthly analytics capture.
+
+    Snapshots preserve the values that were true when a month was captured. The
+    analytics service only falls back to reconstructed subscription history when
+    a snapshot does not exist, so later data changes never silently rewrite an
+    already recorded month.
+    """
+    __tablename__ = "analytics_snapshots"
+    __table_args__ = (UniqueConstraint("snapshot_month", name="uq_analytics_snapshot_month"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_month: Mapped[date] = mapped_column(Date, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    source: Mapped[str] = mapped_column(String(20), default="captured")
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)

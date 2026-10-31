@@ -51,12 +51,94 @@ For password reset email, configure `SMTP_HOST`, `SMTP_PORT`, credentials, `MAIL
 - `/api/subscriptions`, `/api/quotations`: subscription and quotation flows
 - `/api/discounts`, `/api/invoices`: discounts and invoice lifecycle
 - `/api/dashboard`: financial summary, invoice list, and revenue trend
+- `/api/analytics`: staff/admin subscription, revenue, customer, plan and forecast analytics
 
 Interactive API docs are available at `/docs`.
 
-## Validation
+## Smart subscription analytics
 
-Run the automated suite with `python -m pytest -q`. It covers the dashboard shell, registration/login, subscription-to-invoice-to-payment flow, role checks, and recurring billing idempotency.
+Staff and administrators get a dedicated **Analytics** workspace plus a read-only API. Customer accounts are denied access. The module reads the existing subscription, plan, product, discount, invoice, and payment tables; it does not use mock data or duplicate billing models.
+
+### Endpoints
+
+All endpoints accept the common filters below and require `admin` or `staff`:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/analytics/overview` | MRR, ARR, active counts, ARPU, churn, outstanding revenue, revenue growth and period changes |
+| `GET` | `/api/analytics/revenue` | Collected/invoiced revenue series, categorical breakdowns, MRR movement |
+| `GET` | `/api/analytics/subscriptions` | Lifecycle distribution, new/renewed/closed growth, churn reasons, upcoming renewals |
+| `GET` | `/api/analytics/customers` | Customer growth, segmentation, estimated CLV |
+| `GET` | `/api/analytics/customer-segments/{segment}` | Paginated customers in one segment |
+| `GET` | `/api/analytics/plans` | Plan MRR/ARR, subscribers, growth, cancellations and revenue share |
+| `GET` | `/api/analytics/forecast` | Six-month deterministic schedule forecast |
+| `GET` | `/api/analytics/options` | Filter choices for plans, products, customers and cancellation reasons |
+
+Common query parameters:
+
+- `start_date`, `end_date`: inclusive UTC calendar dates. Default: the current date and the first day of the month 11 months ago. Ranges are limited to 10 years.
+- `granularity`: `month`, `quarter` or `year`. Empty periods are included in series.
+- `plan_id`, `product_id`, `customer_id`: optional scope filters.
+- `sort`: `revenue`, `subscribers`, `growth` or `cancellations` on `/plans`.
+- `days`, `limit`, `offset`: renewal window and pagination on `/subscriptions`; `limit` and `offset` also apply to customer segments.
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/analytics/overview?start_date=2026-01-01&end_date=2026-10-31&granularity=month"
+```
+
+### Metric definitions
+
+- **MRR**: sum of active subscriptions only. Unit price is `Plan.price + variant adjustment`, multiplied by quantity, then reduced by the first eligible active recurring discount using the same matching order as the recurring billing runner. Daily, weekly, monthly and yearly amounts normalise to a month (`×365/12`, `×52/12`, `×1`, `÷12`). Tax is excluded. Paused, confirmed and closed subscriptions are excluded from MRR.
+- **ARR**: MRR × 12.
+- **ARPU**: MRR ÷ unique customers with at least one active subscription. Returns zero when there are no active customers.
+- **Collected revenue**: succeeded payments in the selected period, dated by `Payment.created_at`; payments on cancelled invoices are excluded.
+- **Invoiced revenue**: non-cancelled invoices dated by `Invoice.created_at`, using gross `amount_due` including tax.
+- **Outstanding revenue**: current non-paid, non-cancelled invoice balances including tax. It is a current balance, not a period event.
+- **Revenue growth**: collected revenue in the selected period compared with the immediately preceding period of equal length. Percentage change is `null` when the previous period is zero.
+- **Customer churn**: customers active at the start of the latest month who have no active or paused subscription at the measurement date and whose subscription closed during that month. Scheduled cancellations do not count until they take effect. Both customer and subscription churn are reported, with the denominator guarded against zero.
+- **Renewal rate**: reported as unavailable. The current schema does not record every renewal cycle; only manual re-subscriptions are linked through `renewed_from_id`, so a complete rate would be misleading.
+- **Expansion/contraction MRR**: reported as zero because there is no subscription quantity/price-change history. MRR movement exposes new, churned, previous and ending MRR.
+- **Forecast**: a deterministic schedule projection over the next six months, not an AI or statistically trained model. Recurring revenue is prorated for partial months. Expected invoice value uses current recurring prices and billing schedules and excludes tax. Scheduled cancellations and auto-closing plans are counted in the month they take effect.
+
+Date filters apply to event metrics (revenue, growth, churn, renewals and forecast lists). Current-state metrics such as MRR, active counts, outstanding balances and customer segmentation always describe the current database state.
+
+### Historical data and snapshots
+
+Analytics adds `Subscription.closed_at`, `cancellation_requested_at`, `cancellation_reason`, `renewed_from_id`, and the `analytics_snapshots` table. Cancellation requests accept an optional `reason`. Closing or auto-closing a subscription records its effective `closed_at`; reactivation clears the pending cancellation fields.
+
+Existing rows do not have a historical closure timestamp. The API reports how many closed subscriptions have timestamps and marks churn as unavailable when no closure history exists. Monthly MRR before snapshot coverage is reconstructed from `started_at`/`closed_at` using current plan prices and is labelled `reconstructed`. Captured snapshots take precedence, so later edits do not silently rewrite a recorded month.
+
+Generate snapshots with a scheduler (for example, monthly) using the same environment as the API:
+
+```bash
+python -m backend.app.snapshot_runner                 # current month
+python -m backend.app.snapshot_runner --month 2026-08 # one month
+python -m backend.app.snapshot_runner --backfill 12   # current + 11 previous months
+python -m backend.app.snapshot_runner --backfill 12 --force  # explicit correction
+```
+
+Snapshots are unique by month and idempotent: an existing month is kept unless `--force` is supplied. A forced snapshot is marked `corrected`. The runner caps backfills at 120 months.
+
+Apply schema changes with:
+
+```bash
+python -m alembic upgrade head
+```
+
+The analytics migration is safe on both fresh databases (where the initial migration creates the current schema) and existing databases that predate the analytics fields.
+
+### Validation and performance
+
+`python -m pytest -q` covers the existing application and the analytics suite: KPI normalisation, discounts, revenue basis, quarterly/yearly buckets, churn, customer segments, plans, forecast, filters, role access, cancellation lifecycle, snapshots, empty datasets and pagination-sensitive behaviour.
+
+A synthetic SQLite benchmark with 2,000 customers, 6,000 subscriptions, 18,000 invoices and 30,000 payments produced approximate service timings of 0.5 s for overview, 2.2–2.6 s for the revenue endpoint (three breakdowns plus 12-month MRR movement), 0.2 s for subscriptions, 0.15 s for customers, 0.02 s for plans and 0.55 s for forecast on the development machine. PostgreSQL is expected to be faster for the grouped scans; indexes cover subscription lifecycle dates, invoice/payment dates, and snapshot months. The revenue endpoint is the heaviest because it intentionally returns current, reconstructed and breakdown views in one response.
+
+An end-to-end HTTP smoke test against the same benchmark database returned `200` for every analytics endpoint (including quarterly/yearly aggregation, plan sorting, pagination and customer segments), `401` without a token and `422` for an invalid date range. Measured HTTP round trips were approximately 0.11 s for login, 0.46 s for overview, 1.4 s for revenue, 0.22 s for subscriptions, 0.20 s for customers, 0.03 s for plans, 0.56 s for forecast and 0.02 s for filter options.
+
+PostgreSQL is supported through SQLAlchemy's portable query layer and the shared schema, but it was not runtime-tested locally because the configured PostgreSQL credentials were unavailable. Run `python -m alembic upgrade head` and the smoke examples above against the target PostgreSQL instance before deployment.
 
 ## Current integration boundaries
 

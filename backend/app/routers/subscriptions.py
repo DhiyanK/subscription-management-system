@@ -13,6 +13,8 @@ class SubscriptionCreate(BaseModel):
     quantity: int = Field(default=1, ge=1, le=10000)
     customer_id: int | None = None
     variant_id: int | None = None
+class CancellationInput(BaseModel):
+    reason: str | None = Field(default=None, max_length=40)
 
 @router.get("")
 def list_subscriptions(db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -56,15 +58,17 @@ def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db),
     return {"id": subscription.id, "status": subscription.status, "plan": plan.name, "current_period_end": subscription.current_period_end}
 
 @router.post("/{subscription_id}/cancel")
-def cancel_subscription(subscription_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def cancel_subscription(subscription_id: int, data: CancellationInput | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     subscription = db.get(Subscription, subscription_id)
     if not subscription or (user.role == "customer" and subscription.customer_id != user.id):
         raise HTTPException(status_code=404, detail="Subscription not found")
     if subscription.status != "active":
         raise HTTPException(status_code=409, detail="Only active subscriptions can be cancelled")
     subscription.cancel_at_period_end = True
+    subscription.cancellation_requested_at = datetime.now(timezone.utc)
+    subscription.cancellation_reason = (data.reason if data and data.reason else "unspecified")
     db.commit()
-    return {"id": subscription.id, "status": "active", "cancel_at_period_end": True, "ends_at": subscription.current_period_end}
+    return {"id": subscription.id, "status": "active", "cancel_at_period_end": True, "ends_at": subscription.current_period_end, "reason": subscription.cancellation_reason}
 
 @router.post("/{subscription_id}/reactivate")
 def reactivate_subscription(subscription_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -74,6 +78,8 @@ def reactivate_subscription(subscription_id: int, db: Session = Depends(get_db),
     if subscription.status != "active" or not subscription.cancel_at_period_end:
         raise HTTPException(status_code=409, detail="Subscription is not scheduled for cancellation")
     subscription.cancel_at_period_end = False
+    subscription.cancellation_requested_at = None
+    subscription.cancellation_reason = None
     db.commit()
     return {"id": subscription.id, "status": "active", "cancel_at_period_end": False}
 
@@ -100,7 +106,7 @@ def resume_subscription(subscription_id: int, db: Session = Depends(get_db), use
     return {"id": subscription.id, "status": subscription.status}
 
 @router.post("/{subscription_id}/close")
-def close_subscription(subscription_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def close_subscription(subscription_id: int, data: CancellationInput | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     subscription = db.get(Subscription, subscription_id)
     if not subscription or (user.role == "customer" and subscription.customer_id != user.id):
         raise HTTPException(status_code=404, detail="Subscription not found")
@@ -113,8 +119,11 @@ def close_subscription(subscription_id: int, db: Session = Depends(get_db), user
         raise HTTPException(status_code=409, detail="This plan does not allow early closure")
     subscription.status = "closed"
     subscription.cancel_at_period_end = False
+    subscription.closed_at = datetime.now(timezone.utc)
+    if data and data.reason:
+        subscription.cancellation_reason = data.reason
     db.commit()
-    return {"id": subscription.id, "status": subscription.status}
+    return {"id": subscription.id, "status": subscription.status, "closed_at": subscription.closed_at}
 
 @router.post("/{subscription_id}/renew", status_code=201)
 def renew_subscription(subscription_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -131,6 +140,6 @@ def renew_subscription(subscription_id: int, db: Session = Depends(get_db), user
         available_until = available_until.replace(tzinfo=timezone.utc)
     if available_until and now > available_until:
         raise HTTPException(status_code=409, detail="This plan is outside its renewal availability dates")
-    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=now + timedelta(days=30))
+    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=now + timedelta(days=30), renewed_from_id=previous.id)
     db.add(renewed); db.commit(); db.refresh(renewed)
     return {"id": renewed.id, "number": renewed.number, "status": renewed.status}
