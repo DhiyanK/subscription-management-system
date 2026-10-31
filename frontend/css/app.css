@@ -47,3 +47,4 @@ body{background-color:#f5f8f6;background-image:radial-gradient(ellipse at 78% 0%
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #b8eb5e;outline-offset:3px}
 @media(max-width:760px){.analytics-page>.page-heading{padding:15px 14px}.analytics-page>.page-heading::before,.analytics-page>.page-heading::after{right:5%;opacity:.22}.panel:hover,.metric:hover{transform:translateY(-2px)}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}.panel:hover,.metric:hover,.nav-item:hover,.primary-button:hover,.select-button:hover{transform:none}}
+.text-link[type="button"]{border:0;background:transparent;padding:0;font:600 10px 'DM Sans',sans-serif;color:#7254e1;cursor:pointer}

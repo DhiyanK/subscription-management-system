@@ -79,6 +79,7 @@ class Subscription(Base):
     renewed_from_id: Mapped[int | None] = mapped_column(ForeignKey("subscriptions.id"), nullable=True, index=True)
     number: Mapped[str] = mapped_column(String(32), unique=True, index=True, default="")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
+    tax_rate_percent: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=0, server_default="0")
     variant_id: Mapped[int | None] = mapped_column(ForeignKey("product_variants.id"), nullable=True)
     variant: Mapped[ProductVariant | None] = relationship()
     next_billing_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from backend.app.database import get_db
-from backend.app.dependencies import require_roles
+from backend.app.dependencies import current_user, require_roles
 from backend.app.models import Product, ProductVariant, TaxRule, User
 
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -37,6 +37,11 @@ def create_variant(product_id: int, data: VariantInput, db: Session = Depends(ge
     return {"id": variant.id, "name": variant.name, "price_adjustment": str(variant.price_adjustment)}
 @router.get("/taxes")
 def taxes(db: Session = Depends(get_db), _: User = Depends(require_roles("admin", "staff"))):
+    return [{"id": t.id, "name": t.name, "rate_percent": str(t.rate_percent)} for t in db.scalars(select(TaxRule).where(TaxRule.is_active.is_(True)).order_by(TaxRule.name))]
+
+@router.get("/tax-options")
+def tax_options(db: Session = Depends(get_db), _: User = Depends(current_user)):
+    """Return active tax rates for invoice and subscription checkout selectors."""
     return [{"id": t.id, "name": t.name, "rate_percent": str(t.rate_percent)} for t in db.scalars(select(TaxRule).where(TaxRule.is_active.is_(True)).order_by(TaxRule.name))]
 @router.post("/taxes", status_code=201)
 def create_tax(data: TaxInput, db: Session = Depends(get_db), _: User = Depends(require_roles("admin"))):

@@ -55,6 +55,100 @@ def test_registration_login_subscription_billing_flow(client):
     duplicate = client.post(f"/api/invoices/{invoice['id']}/payments", headers=admin_headers, json={"provider_reference":"reference-1"})
     assert duplicate.status_code == 409
 
+def test_customer_selects_a_single_tax_rate_and_prints_a_complete_invoice(client):
+    admin_token = client.post("/api/auth/login", json={"email":"admin@example.com", "password":"StrongAdminPassword123!"}).json()["access_token"]
+    admin = {"Authorization": f"Bearer {admin_token}"}
+    gst = client.post("/api/taxes", headers=admin, json={"name":"GST 18", "rate_percent":"18"}).json()
+    other = client.post("/api/taxes", headers=admin, json={"name":"Other 5", "rate_percent":"5"}).json()
+    customer = client.post("/api/auth/register", json={"email":"tax-choice@example.com", "full_name":"Tax Customer", "password":"StrongCustomerPassword123!"}).json()
+    token = client.post("/api/auth/login", json={"email":"tax-choice@example.com", "password":"StrongCustomerPassword123!"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert len(client.get("/api/tax-options", headers=headers).json()) == 2
+    created = client.post("/api/subscriptions", headers=headers, json={"plan_id":1, "tax_rule_id":gst["id"]})
+    assert created.status_code == 201
+    assert created.json()["invoice"]["amount_due"] == "588.82"
+    invoice_id = created.json()["invoice"]["id"]
+    invoice = client.get("/api/invoices", headers=headers).json()[0]
+    assert invoice["lines"][0]["tax_rate"] == "18.00"
+
+    printed = client.get(f"/api/invoices/{invoice_id}/print", headers=headers)
+    assert printed.status_code == 200
+    assert "Invoice INV-" in printed.text
+    assert "Bill to" in printed.text
+    assert "Subtotal" in printed.text and "Tax" in printed.text and "Invoice total" in printed.text
+    assert "Print invoice" in printed.text
+
+    manual = client.post("/api/invoices", headers=admin, json={"subscription_id":created.json()["id"], "tax_rule_id":other["id"]})
+    assert manual.status_code == 201
+    assert manual.json()["amount_due"] == "523.95"
+
+def test_razorpay_checkout_verifies_capture_before_paying_invoice(client, monkeypatch):
+    import hashlib
+    import hmac
+    from backend.app.core import settings
+    from backend.app.routers import billing
+
+    monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_public")
+    monkeypatch.setattr(settings, "razorpay_key_secret", "test_secret")
+    customer = client.post("/api/auth/register", json={"email":"checkout@example.com", "full_name":"Checkout Customer", "password":"StrongCustomerPassword123!"}).json()
+    token = client.post("/api/auth/login", json={"email":"checkout@example.com", "password":"StrongCustomerPassword123!"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    subscription = client.post("/api/subscriptions", headers=headers, json={"plan_id":1}).json()
+    invoice = subscription["invoice"]
+
+    def fake_razorpay_request(method, path, payload=None):
+        if method == "POST" and path == "/orders":
+            assert payload["amount"] == 49900
+            return {"id":"order_test_123", "amount":payload["amount"], "currency":"INR"}
+        if method == "GET" and path == "/payments/pay_test_123":
+            return {"id":"pay_test_123", "order_id":"order_test_123", "amount":49900, "currency":"INR", "status":"captured"}
+        raise AssertionError(f"Unexpected Razorpay request: {method} {path}")
+
+    monkeypatch.setattr(billing, "_razorpay_request", fake_razorpay_request)
+    order = client.post(f"/api/invoices/{invoice['id']}/razorpay-order", headers=headers)
+    assert order.status_code == 201
+    assert order.json()["key_id"] == "rzp_test_public"
+    assert "test_secret" not in order.text
+    signature = hmac.new(b"test_secret", b"order_test_123|pay_test_123", hashlib.sha256).hexdigest()
+    verified = client.post("/api/invoices/razorpay/verify", headers=headers, json={
+        "razorpay_order_id":"order_test_123",
+        "razorpay_payment_id":"pay_test_123",
+        "razorpay_signature":signature,
+    })
+    assert verified.status_code == 200
+    assert verified.json()["status"] == "paid"
+    assert client.get("/api/invoices", headers=headers).json()[0]["status"] == "paid"
+
+def test_razorpay_captured_webhook_is_signature_checked_and_idempotent(client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    from backend.app.core import settings
+    from backend.app.routers import billing
+
+    monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_public")
+    monkeypatch.setattr(settings, "razorpay_key_secret", "test_secret")
+    monkeypatch.setattr(settings, "razorpay_webhook_secret", "webhook_secret")
+    customer = client.post("/api/auth/register", json={"email":"webhook@example.com", "full_name":"Webhook Customer", "password":"StrongCustomerPassword123!"}).json()
+    token = client.post("/api/auth/login", json={"email":"webhook@example.com", "password":"StrongCustomerPassword123!"}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    subscription = client.post("/api/subscriptions", headers=headers, json={"plan_id":1}).json()
+    invoice = subscription["invoice"]
+    monkeypatch.setattr(billing, "_razorpay_request", lambda method, path, payload=None: {"id":"order_hook_123"})
+    assert client.post(f"/api/invoices/{invoice['id']}/razorpay-order", headers=headers).status_code == 201
+
+    event = {"event":"payment.captured", "payload":{"payment":{"entity":{"id":"pay_hook_123", "order_id":"order_hook_123", "amount":49900, "currency":"INR", "status":"captured"}}}}
+    raw = json.dumps(event, separators=(",", ":")).encode()
+    signature = hmac.new(b"webhook_secret", raw, hashlib.sha256).hexdigest()
+    webhook_headers = {"Content-Type":"application/json", "X-Razorpay-Signature":signature}
+    assert client.post("/api/webhooks/razorpay", content=raw, headers=webhook_headers).status_code == 200
+    assert client.post("/api/webhooks/razorpay", content=raw, headers=webhook_headers).status_code == 200
+    assert client.get("/api/invoices", headers=headers).json()[0]["status"] == "paid"
+
+    tampered = raw.replace(b"49900", b"49901")
+    assert client.post("/api/webhooks/razorpay", content=tampered, headers=webhook_headers).status_code == 400
+
 def test_role_access_is_enforced(client):
     response = client.post("/api/plans", json={"name":"Premium", "price":"20.00", "currency":"INR", "interval":"monthly"})
     assert response.status_code == 401

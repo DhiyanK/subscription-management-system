@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from backend.app.models import Discount, Invoice, InvoiceLine, Subscription, TaxRule
+from backend.app.models import Discount, Invoice, InvoiceLine, Subscription
 from backend.app.services.billing_dates import add_interval
 
 
@@ -67,11 +67,7 @@ def issue_invoice_for_subscription(
             )
         discount.usage_count += 1
 
-    tax_rate = db.scalar(
-        select(func.coalesce(func.sum(TaxRule.rate_percent), 0)).where(
-            TaxRule.is_active.is_(True)
-        )
-    ) or Decimal("0")
+    tax_rate = subscription.tax_rate_percent or Decimal("0")
     tax_amount = (
         subtotal * Decimal(str(tax_rate)) / Decimal("100")
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

@@ -64,10 +64,55 @@ async function loadCustomerPortal(headers) {
   const owed = invoices.filter(i=>i.status!=='paid').reduce((sum,i)=>sum+Number(i.amount_due),0);
   document.querySelector('#mrr').textContent = currency(owed); document.querySelector('#outstanding').textContent = currency(owed);
   document.querySelector('#revenueTotal').textContent = `${invoices.length} invoices`;
-  document.querySelector('#activityRows').innerHTML = invoices.length ? invoices.map(i=>`<tr><td>${esc(i.number)}</td><td>Invoice</td><td>Subscription #${i.subscription_id}</td><td>${new Date(i.due_at).toLocaleDateString('en-IN')}</td><td><span class="status-pill ${i.status==='paid'?'paid':'active'}">${esc(i.status)}</span><a class="text-link" href="/api/invoices/${i.id}/print" target="_blank">Print</a></td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">No invoices yet.</td></tr>';
-  document.querySelector('#planList').innerHTML = subscriptions.length ? subscriptions.map(s=>`<div class="plan-row"><div class="plan-symbol growth">S</div><div class="plan-info"><strong>${esc(s.plan)}</strong><small>Renews ${new Date(s.current_period_end).toLocaleDateString('en-IN')}</small></div><strong>${esc(s.status)}</strong><button class="select-button" data-cancel="${s.id}">Cancel</button></div>`).join('') : '<div class="plan-empty">No subscriptions yet.</div>';
-  document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=async()=>{try{await api(`/api/subscriptions/${b.dataset.cancel}/cancel`,{method:'POST'});notify('Cancellation scheduled.');await loadCustomerPortal(headers);}catch(e){notify(e.message);}});
+  document.querySelector('#activityRows').innerHTML = invoices.length ? invoices.map(i=>`<tr><td>${esc(i.number)}</td><td>Invoice</td><td>Subscription #${i.subscription_id}</td><td>${new Date(i.due_at).toLocaleDateString('en-IN')}</td><td><span class="status-pill ${i.status==='paid'?'paid':'active'}">${esc(i.status)}</span><button class="text-link" data-print-invoice="${i.id}" type="button">Print</button></td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">No invoices yet.</td></tr>';
+  bindInvoicePrintButtons(document.querySelector('#activityRows'));
+  document.querySelector('#planList').innerHTML = subscriptions.length ? subscriptions.map(s=>`<div class="plan-row"><div class="plan-symbol growth">S</div><div class="plan-info"><strong>${esc(s.plan)}</strong><small>${s.cancel_at_period_end?'Ends':'Renews'} ${new Date(s.current_period_end).toLocaleDateString('en-IN')}</small></div><strong>${s.cancel_at_period_end?'Cancellation scheduled':esc(s.status)}</strong>${subscriptionActionMarkup(s)}</div>`).join('') : '<div class="plan-empty">No subscriptions yet.</div>';
+  bindSubscriptionActions(document.querySelector('#planList'), subscriptions, ()=>loadCustomerPortal(tokenHeaders()));
   document.querySelector('#newSubscription').textContent='Browse plans'; setSignedIn(true);
+}
+function subscriptionActionMarkup(subscription){
+  if(subscription.status!=='active')return '<span class="table-secondary">—</span>';
+  if(subscription.cancel_at_period_end)return `<button class="select-button" data-reactivate="${subscription.id}">Keep subscription</button>`;
+  return `<button class="select-button" data-cancel="${subscription.id}">Cancel subscription</button>`;
+}
+function bindSubscriptionActions(root, subscriptions, refresh){
+  root.querySelectorAll('[data-cancel]').forEach(button=>button.onclick=()=>{
+    const subscription=subscriptions.find(item=>item.id===Number(button.dataset.cancel));
+    if(subscription)showSubscriptionCancellationForm(subscription,refresh);
+  });
+  root.querySelectorAll('[data-reactivate]').forEach(button=>button.onclick=async()=>{
+    button.disabled=true;
+    try{await api(`/api/subscriptions/${button.dataset.reactivate}/reactivate`,{method:'POST'});notify('Your subscription will continue as usual.');await refresh();}
+    catch(error){notify(error.message);button.disabled=false;}
+  });
+}
+function showSubscriptionCancellationForm(subscription,refresh){
+  const dialogEl=document.querySelector('#actionDialog');
+  const endDate=new Date(subscription.current_period_end).toLocaleDateString('en-IN',{dateStyle:'long'});
+  dialogEl.innerHTML=`<form id="cancelSubscriptionForm" class="action-form"><button class="dialog-close" type="button" aria-label="Close">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Schedule cancellation</h2><p>Your ${esc(subscription.plan)} plan will stay active until ${esc(endDate)}. It will not renew after that date.</p><label>Reason (optional)<select name="reason"><option value="">Prefer not to say</option><option value="too_expensive">Too expensive</option><option value="not_using">I no longer need it</option><option value="missing_features">Missing features</option><option value="switching">Switching to another service</option><option value="other">Other</option></select></label><p class="form-error" id="cancelSubscriptionError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Confirm cancellation</button></form>`;
+  dialogEl.showModal();
+  dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close();
+  dialogEl.querySelector('#cancelSubscriptionForm').onsubmit=async event=>{
+    event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]'),error=form.querySelector('.form-error');
+    button.disabled=true;button.textContent='Scheduling…';error.textContent='';
+    try{const reason=new FormData(form).get('reason');await api(`/api/subscriptions/${subscription.id}/cancel`,{method:'POST',body:JSON.stringify({reason:reason||null})});dialogEl.close();notify(`Cancellation scheduled for ${endDate}.`);await refresh();}
+    catch(err){error.textContent=err.message;button.disabled=false;button.textContent='Confirm cancellation';}
+  };
+}
+function bindInvoicePrintButtons(root){
+  root.querySelectorAll('[data-print-invoice]').forEach(button=>button.onclick=()=>openInvoicePrint(button.dataset.printInvoice));
+}
+async function openInvoicePrint(invoiceId){
+  const printWindow=window.open('about:blank','_blank');
+  if(!printWindow){notify('Allow pop-ups to open the invoice for printing.');return;}
+  printWindow.document.body.textContent='Preparing your invoice…';
+  try{
+    const response=await fetch(`/api/invoices/${invoiceId}/print`,{headers:tokenHeaders()});
+    if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||`Could not open invoice (${response.status}).`);}
+    const objectUrl=URL.createObjectURL(await response.blob());
+    printWindow.location.replace(objectUrl);
+    setTimeout(()=>URL.revokeObjectURL(objectUrl),300000);
+  }catch(error){printWindow.close();notify(error.message);}
 }
 function drawRevenue(items) {
   const svg=document.querySelector('#revenueChart'), labels=document.querySelector('#revenueMonths');
@@ -84,7 +129,7 @@ const screens = {
   staff:{title:'Staff members',subtitle:'Internal team accounts. Only admins can add staff.',url:'/api/customers/staff',cols:['ID','Name','Email','Joined','Status'],keys:['id','name','email','created_at','active']},
   invoices:{title:'Invoices',subtitle:'Invoices are issued at subscription start and updated when payments are recorded.',url:'/api/dashboard/invoices?limit=100',cols:['Invoice','Subscription','Amount','Due','Status','Document'],keys:['number','subscription_id','amount_due','due_at','status']},
   products:{title:'Products',subtitle:'Manage your product catalog, variants, and pricing.',url:'/api/products',cols:['Product','Type','Sales price','Cost price','Variants'],keys:['name','product_type','sales_price','cost_price','variants']},
-  taxes:{title:'Taxes',subtitle:'Tax rates applied to invoices automatically.',url:'/api/taxes',cols:['Name','Rate','Status'],keys:['name','rate_percent','is_active']},
+  taxes:{title:'Taxes',subtitle:'Create tax rates and select one for each invoice or subscription. A subscription carries its selection into renewals.',url:'/api/taxes',cols:['Name','Rate','Status'],keys:['name','rate_percent','is_active']},
   quotations:{title:'Quotations',subtitle:'Reusable quote templates and customer offers.',url:'/api/quotation-templates',cols:['Template','Plan ID','Validity (days)'],keys:['name','plan_id','validity_days']},
   plans:{title:'Plans',subtitle:'Set pricing and availability for recurring offers.',url:'/api/plans',cols:['Plan','Price','Interval','Minimum qty','Status'],keys:['name','price','interval','minimum_quantity','is_active']},
   discounts:{title:'Discounts',subtitle:'Manage automatic billing discounts and use limits.',url:'/api/discounts',cols:['Code','Percent','Fixed amount','Uses','Status'],keys:['code','percent_off','amount_off','usage_count','active']},
@@ -96,7 +141,7 @@ const forms = {
   taxes:{label:'New tax rule',fields:[['name','Tax name'],['rate_percent','Rate (%)','number']]},
   discounts:{label:'New discount',fields:[['code','Code'],['discount_type','Discount type','select','Percentage,Fixed amount'],['percent_off','Percent off','number'],['amount_off','Fixed amount','number'],['minimum_quantity','Minimum quantity','number'],['minimum_amount','Minimum purchase','number'],['product_id','Product ID (optional)','number'],['usage_limit','Usage limit (optional)','number']]},
   subscriptions:{label:'New subscription',fields:[['plan_id','Plan ID','number'],['quantity','Quantity','number'],['customer_id','Customer ID','number'],['variant_id','Variant ID (optional)','number']]},
-  invoices:{label:'Create invoice',fields:[['subscription_id','Subscription ID','number'],['discount_code','Discount code (optional)']]},
+  invoices:{label:'Create invoice',fields:[['subscription_id','Subscription','select',''],['discount_code','Discount code (optional)'],['tax_rule_id','Tax rate','select','']]},
   quotations:{label:'New quotation template',fields:[['name','Template name'],['plan_id','Plan ID','number'],['validity_days','Validity days','number']]},
   taxes:{label:'New tax rule',fields:[['name','Tax name'],['rate_percent','Rate (%)','number']]},
   staff:{label:'New staff member',fields:[['email','Work email','email'],['full_name','Full name'],['password','Temporary password','password']]},
@@ -105,7 +150,8 @@ async function showScreen(name) {
   const config={...screens[name]}; if(!config)return;
   const role=document.body.dataset.role||'customer';
   if(name==='plans'&&role==='customer'){config.subtitle='Choose a plan to start your subscription.';config.cols=['Plan','Price','Interval','Minimum qty','Choose'];}
-  if(name==='invoices'&&role==='customer'){config.url='/api/invoices';config.subtitle='Invoices are issued when your subscription starts. Staff update the status after payment is received.';}
+  if(name==='invoices'&&role==='customer'){config.url='/api/invoices';config.subtitle='Pay an open invoice online or print a copy for your records.';}
+  if(name==='subscriptions'&&role==='customer')config.cols=['Number','Plan','Status','Current period ends','Manage'];
   if(name==='quotations'&&role==='customer'){config.url='/api/quotations';config.cols=['Quote','Plan','Status','Expires','Action'];config.keys=['number','plan','status','expires_at'];}
   document.querySelector('.main').classList.add('manage-mode');
   const root=document.querySelector('.page'); root.innerHTML=`<div class="page-heading"><div><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h1>${config.title}</h1><p class="subtitle">${config.subtitle}</p></div><button class="primary-button" id="createAction">＋ ${forms[name]?.label||'Create'}</button></div><section class="panel data-panel"><div class="panel-heading"><div><h2>${config.title}</h2><p>Live data from your workspace</p></div><input class="table-search" id="screenSearch" placeholder="Filter results" aria-label="Filter results"></div><div class="table-wrap"><table><thead><tr>${config.cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody id="screenRows"><tr><td colspan="${config.cols.length}" class="empty-cell">Loading…</td></tr></tbody></table></div></section>`;
@@ -120,7 +166,14 @@ async function showScreen(name) {
         return;
       }
       if(name==='invoices'){
-        body.innerHTML=arr.length?arr.map(invoice=>`<tr><td><strong>${esc(invoice.number)}</strong></td><td>${esc(invoice.subscription_id)}</td><td>${esc(invoice.currency||'INR')} ${Number(invoice.amount_due).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${invoice.due_at?new Date(invoice.due_at).toLocaleDateString('en-IN'):'—'}</td><td><span class="status-pill ${invoice.status==='paid'?'paid':'active'}">${esc(invoice.status)}${invoice.overdue?' · overdue':''}</span></td><td><a class="text-link" href="/api/invoices/${invoice.id}/print" target="_blank" rel="noopener">View / print</a></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No invoices yet. Start a subscription to receive your first invoice.</td></tr>`;
+        body.innerHTML=arr.length?arr.map(invoice=>`<tr><td><strong>${esc(invoice.number)}</strong></td><td>${esc(invoice.subscription_id)}</td><td>${esc(invoice.currency||'INR')} ${Number(invoice.amount_due).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${invoice.due_at?new Date(invoice.due_at).toLocaleDateString('en-IN'):'—'}</td><td><span class="status-pill ${invoice.status==='paid'?'paid':'active'}">${esc(invoice.status)}${invoice.overdue?' · overdue':''}</span></td><td>${role==='customer'&&['open','confirmed'].includes(invoice.status)?`<button class="select-button" data-pay-invoice="${invoice.id}">Pay now</button>`:''}<button class="text-link" data-print-invoice="${invoice.id}" type="button">${role==='customer'?'Print':'View / print'}</button></td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">No invoices yet. Start a subscription to receive your first invoice.</td></tr>`;
+        body.querySelectorAll('[data-pay-invoice]').forEach(button=>button.onclick=()=>payInvoiceWithRazorpay(arr.find(invoice=>invoice.id===Number(button.dataset.payInvoice)),button));
+        bindInvoicePrintButtons(body);
+        return;
+      }
+      if(name==='subscriptions'&&role==='customer'){
+        body.innerHTML=arr.length?arr.map(subscription=>`<tr><td><strong>${esc(subscription.number)}</strong></td><td>${esc(subscription.plan)}</td><td><span class="status-pill ${subscription.status==='active'?'active':''}">${subscription.cancel_at_period_end?'Cancellation scheduled':esc(subscription.status)}</span></td><td>${subscription.current_period_end?new Date(subscription.current_period_end).toLocaleDateString('en-IN'):'—'}</td><td>${subscriptionActionMarkup(subscription)}</td></tr>`).join(''):`<tr><td colspan="${config.cols.length}" class="empty-cell">You do not have any subscriptions yet. Browse plans to get started.</td></tr>`;
+        bindSubscriptionActions(body,arr,()=>showScreen('subscriptions'));
         return;
       }
       if(name==='payments'){
@@ -145,10 +198,12 @@ async function showScreen(name) {
     if(forms[name]&&canCreate)create.onclick=()=>showCreateForm(name);else create.onclick=null;
   } catch(e){document.querySelector('#screenRows').innerHTML=`<tr><td colspan="${config.cols.length}" class="empty-cell">${esc(e.message)}</td></tr>`;}
 }
-function showPlanSubscribeForm(plan){
+async function showPlanSubscribeForm(plan){
   if(!plan)return;
+  const taxes=await api('/api/tax-options');
   const minimum=Math.max(1,Number(plan.minimum_quantity||1)), dialogEl=document.querySelector('#actionDialog');
-  dialogEl.innerHTML=`<form id="planSubscribeForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Choose ${esc(plan.name)}</h2><p>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} / ${esc(plan.interval)} per unit</p><p class="subtitle">An invoice will be added to your account when you start.</p><label>Quantity (minimum ${minimum})<input name="quantity" type="number" min="${minimum}" max="10000" step="1" value="${minimum}" required></label><p class="form-error" id="planSubscribeError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Start subscription</button></form>`;
+  const taxOptions=['<option value="">No tax</option>',...taxes.map(tax=>`<option value="${tax.id}">${esc(tax.name)} · ${Number(tax.rate_percent)}%</option>`)].join('');
+  dialogEl.innerHTML=`<form id="planSubscribeForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">SUBSCRIPTION</p><h2>Choose ${esc(plan.name)}</h2><p>${esc(plan.currency)} ${Number(plan.price).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})} / ${esc(plan.interval)} per unit</p><p class="subtitle">Choose a tax rate for this subscription’s invoices. The selection will carry through renewals.</p><label>Quantity (minimum ${minimum})<input name="quantity" type="number" min="${minimum}" max="10000" step="1" value="${minimum}" required></label><label>Tax rate<select name="tax_rule_id">${taxOptions}</select></label><p class="form-error" id="planSubscribeError" role="alert" aria-live="polite"></p><button class="primary-button" type="submit">Start subscription</button></form>`;
   dialogEl.showModal();
   dialogEl.querySelector('.dialog-close').onclick=()=>dialogEl.close();
   dialogEl.querySelector('#planSubscribeForm').onsubmit=async event=>{
@@ -156,11 +211,33 @@ function showPlanSubscribeForm(plan){
     const form=event.currentTarget, button=form.querySelector('button[type="submit"]'), error=document.querySelector('#planSubscribeError');
     button.disabled=true; button.textContent='Starting…'; error.textContent='';
     try{
-      const quantity=Number(new FormData(form).get('quantity'));
-      const result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:plan.id,quantity})});
+      const formData=new FormData(form),quantity=Number(formData.get('quantity')),taxRuleId=formData.get('tax_rule_id');
+      const result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:plan.id,quantity,tax_rule_id:taxRuleId?Number(taxRuleId):null})});
       dialogEl.close(); notify(`Invoice ${result.invoice.number} was added to your account.`); await showScreen('invoices');
     }catch(err){error.textContent=err.message;button.disabled=false;button.textContent='Start subscription';}
   };
+}
+let razorpayCheckoutPromise;
+function loadRazorpayCheckout(){
+  if(window.Razorpay)return Promise.resolve();
+  if(!razorpayCheckoutPromise)razorpayCheckoutPromise=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');script.src='https://checkout.razorpay.com/v1/checkout.js';script.onload=resolve;script.onerror=()=>{razorpayCheckoutPromise=null;reject(new Error('Razorpay Checkout could not be loaded. Check your internet connection and retry.'));};document.head.append(script);
+  });
+  return razorpayCheckoutPromise;
+}
+async function payInvoiceWithRazorpay(invoice,button){
+  if(button){button.disabled=true;button.textContent='Opening checkout…';}
+  try{
+    const order=await api(`/api/invoices/${invoice.id}/razorpay-order`,{method:'POST'});
+    await loadRazorpayCheckout();
+    const checkout=new window.Razorpay({key:order.key_id,amount:order.amount,currency:order.currency,name:order.name,description:order.description,order_id:order.order_id,prefill:order.prefill,theme:{color:'#236b5a'},handler:async response=>{
+      try{await api('/api/invoices/razorpay/verify',{method:'POST',body:JSON.stringify(response)});notify(`${invoice.number} is paid.`);await showScreen('invoices');}
+      catch(error){notify(`Payment submitted, but confirmation failed: ${error.message}`);if(button){button.disabled=false;button.textContent='Retry payment';}}
+    }});
+    checkout.on('payment.failed',response=>notify(response?.error?.description||'Razorpay could not complete the payment. You can retry from this invoice.'));
+    checkout.open();
+    if(button){button.disabled=false;button.textContent='Pay now';}
+  }catch(error){notify(error.message);if(button){button.disabled=false;button.textContent='Pay now';}}
 }
 function showPaymentForm(invoice){
   if(!invoice)return;
@@ -183,14 +260,21 @@ async function showCreateForm(name){
   let form=forms[name];
   if(name==='products')form.fields=[...form.fields,['variant_name','First variant (optional)'],['price_adjustment','Variant price adjustment','number']];
   if(name==='subscriptions'){
-    const [plans, customers, products]=await Promise.all([api('/api/plans'),api('/api/customers'),api('/api/products')]);
+    const [plans, customers, products, taxes]=await Promise.all([api('/api/plans'),api('/api/customers'),api('/api/products'),api('/api/tax-options')]);
     const planOptions=plans.map(p=>`${p.id}::${p.name} — ${currency(p.price)} / ${p.interval}`).join(';');
     const customerOptions=customers.map(c=>`${c.id}::${c.name} — ${c.email}`).join(';');
     const variantOptions=['::No variant',...products.flatMap(p=>(p.variants||[]).map(v=>`${v.id}::${p.name} · ${v.name} (+${currency(v.price_adjustment)})`))].join(';');
-    form={...form,fields:[['plan_id','Plan','select',planOptions],['customer_id','Customer','select',customerOptions],['quantity','Quantity','number'],['variant_id','Product variant (optional)','select',variantOptions]]};
+    const taxOptions=['::No tax (0%)',...taxes.map(t=>`${t.id}::${t.name} · ${t.rate_percent}%`)].join(';');
+    form={...form,fields:[['plan_id','Plan','select',planOptions],['customer_id','Customer','select',customerOptions],['quantity','Quantity','number'],['variant_id','Product variant (optional)','select',variantOptions],['tax_rule_id','Tax rate for subscription and renewals','select',taxOptions]]};
+  }
+  if(name==='invoices'){
+    const [subscriptions,taxes]=await Promise.all([api('/api/subscriptions'),api('/api/tax-options')]);
+    const subscriptionOptions=['::Choose subscription',...subscriptions.filter(s=>s.status==='active').map(s=>`${s.id}::${s.number} · ${s.customer_name} · ${s.plan}`)].join(';');
+    const taxOptions=['::No tax (0%)',...taxes.map(t=>`${t.id}::${t.name} · ${t.rate_percent}%`)].join(';');
+    form={...form,fields:[['subscription_id','Subscription','select',subscriptionOptions],['discount_code','Discount code (optional)'],['tax_rule_id','Tax rate for this invoice','select',taxOptions]]};
   }
   const dialogEl=document.querySelector('#actionDialog');
-  dialogEl.innerHTML=`<form id="actionForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h2>${form.label}</h2><p class="form-error" id="actionError" role="alert" aria-live="polite"></p>${form.fields.map(([key,label,type='text',opts])=>`<label${name==='discounts'?` data-field="${key}"`:''}>${label}${type==='select'?`<select name="${key}">${opts.includes('::')?opts.split(';').map(item=>{const [value,...label]=item.split('::');return `<option value="${esc(value)}">${esc(label.join('::'))}</option>`}).join(''):opts.split(',').map(v=>`<option>${esc(v)}</option>`).join('')}</select>`:`<input name="${key}" type="${type}" ${type==='number'?'step="0.01" min="0"':''} ${['name','price','email','plan_id','customer_id','quantity','code'].includes(key)?'required':''}>`}</label>`).join('')}<button class="primary-button" type="submit">Save</button></form>`;dialogEl.showModal();
+  dialogEl.innerHTML=`<form id="actionForm" class="action-form"><button class="dialog-close" type="button">×</button><p class="eyebrow">BRIGHTLOOP WORKSPACE</p><h2>${form.label}</h2><p class="form-error" id="actionError" role="alert" aria-live="polite"></p>${form.fields.map(([key,label,type='text',opts])=>`<label${name==='discounts'?` data-field="${key}"`:''}>${label}${type==='select'?`<select name="${key}" ${['subscription_id'].includes(key)?'required':''}>${opts.includes('::')?opts.split(';').map(item=>{const [value,...label]=item.split('::');return `<option value="${esc(value)}">${esc(label.join('::'))}</option>`}).join(''):opts.split(',').map(v=>`<option>${esc(v)}</option>`).join('')}</select>`:`<input name="${key}" type="${type}" ${type==='number'?'step="0.01" min="0"':''} ${['name','price','email','plan_id','customer_id','quantity','code'].includes(key)?'required':''}>`}</label>`).join('')}<button class="primary-button" type="submit">Save</button></form>`;dialogEl.showModal();
   if(name==='discounts'){
     const formElement=dialogEl.querySelector('#actionForm'), typeSelect=formElement.elements.discount_type;
     const updateDiscountFields=()=>{
@@ -207,9 +291,9 @@ async function showCreateForm(name){
     else if(name==='plans'){payload.price=Number(payload.price);payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.product_id=payload.product_id?Number(payload.product_id):null;result=await api('/api/plans',{method:'POST',body:JSON.stringify(payload)});}
     else if(name==='taxes')result=await api('/api/taxes',{method:'POST',body:JSON.stringify({...payload,rate_percent:Number(payload.rate_percent)})});
     else if(name==='discounts'){const type=payload.discount_type;delete payload.discount_type;payload.percent_off=type==='Percentage'?Number(payload.percent_off||0):0;payload.amount_off=type==='Fixed amount'?Number(payload.amount_off||0):0;payload.minimum_quantity=Number(payload.minimum_quantity||1);payload.minimum_amount=Number(payload.minimum_amount||0);payload.product_id=payload.product_id?Number(payload.product_id):null;payload.usage_limit=payload.usage_limit?Number(payload.usage_limit):null;result=await api('/api/discounts',{method:'POST',body:JSON.stringify(payload)});}
-    else if(name==='subscriptions')result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:Number(payload.plan_id),quantity:Number(payload.quantity||1),customer_id:payload.customer_id?Number(payload.customer_id):null,variant_id:payload.variant_id?Number(payload.variant_id):null})});
+    else if(name==='subscriptions')result=await api('/api/subscriptions',{method:'POST',body:JSON.stringify({plan_id:Number(payload.plan_id),quantity:Number(payload.quantity||1),customer_id:payload.customer_id?Number(payload.customer_id):null,variant_id:payload.variant_id?Number(payload.variant_id):null,tax_rule_id:payload.tax_rule_id?Number(payload.tax_rule_id):null})});
     else if(name==='quotations'){if(document.body.dataset.role==='customer')throw new Error('Customers can accept offers sent to their account.');result=await api('/api/quotation-templates',{method:'POST',body:JSON.stringify({...payload,plan_id:Number(payload.plan_id),validity_days:Number(payload.validity_days||30)})});}
-    else if(name==='invoices')result=await api('/api/invoices',{method:'POST',body:JSON.stringify({subscription_id:Number(payload.subscription_id),discount_code:payload.discount_code||null})});
+    else if(name==='invoices')result=await api('/api/invoices',{method:'POST',body:JSON.stringify({subscription_id:Number(payload.subscription_id),discount_code:payload.discount_code||null,tax_rule_id:payload.tax_rule_id?Number(payload.tax_rule_id):null})});
     else if(name==='staff')result=await api('/api/auth/staff',{method:'POST',body:JSON.stringify(payload)});
      if(name==='subscriptions'&&result?.invoice)notify(`Invoice ${result.invoice.number} was created for ${result.plan}.`);else notify('Saved successfully.');dialogEl.close();await showScreen(name);
     }catch(err){document.querySelector('#actionError').textContent=err.message;}

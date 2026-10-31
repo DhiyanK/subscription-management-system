@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     mail_from: str = "billing@brightloop.example"
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

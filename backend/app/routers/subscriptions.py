@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from backend.app.database import get_db
 from backend.app.dependencies import current_user
-from backend.app.models import Plan, ProductVariant, Subscription, User
+from backend.app.models import Plan, ProductVariant, Subscription, TaxRule, User
 from backend.app.services.billing_dates import add_interval
 from backend.app.services.recurring_billing import issue_invoice_for_subscription
 
@@ -15,6 +16,7 @@ class SubscriptionCreate(BaseModel):
     quantity: int = Field(default=1, ge=1, le=10000)
     customer_id: int | None = None
     variant_id: int | None = None
+    tax_rule_id: int | None = None
 class CancellationInput(BaseModel):
     reason: str | None = Field(default=None, max_length=40)
 
@@ -23,7 +25,7 @@ def list_subscriptions(db: Session = Depends(get_db), user: User = Depends(curre
     query = select(Subscription).order_by(Subscription.started_at.desc())
     if user.role == "customer":
         query = query.where(Subscription.customer_id == user.id)
-    return [{"id": s.id, "number": s.number, "next_billing_at": s.next_billing_at, "customer_id": s.customer_id, "customer_name": s.customer.full_name, "customer_email": s.customer.email, "plan_id": s.plan_id, "plan": s.plan.name, "status": s.status, "started_at": s.started_at, "current_period_end": s.current_period_end, "cancel_at_period_end": s.cancel_at_period_end} for s in db.scalars(query)]
+    return [{"id": s.id, "number": s.number, "next_billing_at": s.next_billing_at, "customer_id": s.customer_id, "customer_name": s.customer.full_name, "customer_email": s.customer.email, "plan_id": s.plan_id, "plan": s.plan.name, "status": s.status, "started_at": s.started_at, "current_period_end": s.current_period_end, "cancel_at_period_end": s.cancel_at_period_end, "tax_rate_percent": str(s.tax_rate_percent)} for s in db.scalars(query)]
 
 @router.post("", status_code=201)
 def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -57,7 +59,13 @@ def create_subscription(data: SubscriptionCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=422, detail="Selected variant does not belong to this plan product")
     if variant and plan.price + variant.price_adjustment < 0:
         raise HTTPException(status_code=422, detail="Variant adjustment cannot make the subscription price negative")
-    subscription = Subscription(customer_id=customer_id, plan_id=plan.id, variant_id=data.variant_id, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{user.id}", quantity=data.quantity, started_at=now, next_billing_at=now, current_period_end=add_interval(now, plan.interval))
+    tax_rate = Decimal("0")
+    if data.tax_rule_id is not None:
+        tax = db.get(TaxRule, data.tax_rule_id)
+        if not tax or not tax.is_active:
+            raise HTTPException(status_code=422, detail="Select an active tax rate")
+        tax_rate = tax.rate_percent
+    subscription = Subscription(customer_id=customer_id, plan_id=plan.id, variant_id=data.variant_id, tax_rate_percent=tax_rate, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{user.id}", quantity=data.quantity, started_at=now, next_billing_at=now, current_period_end=add_interval(now, plan.interval))
     db.add(subscription)
     db.flush()
     invoice, _ = issue_invoice_for_subscription(db, subscription, now, now=now)
@@ -148,7 +156,7 @@ def renew_subscription(subscription_id: int, db: Session = Depends(get_db), user
         available_until = available_until.replace(tzinfo=timezone.utc)
     if available_until and now > available_until:
         raise HTTPException(status_code=409, detail="This plan is outside its renewal availability dates")
-    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=add_interval(now, previous.plan.interval), renewed_from_id=previous.id)
+    renewed = Subscription(customer_id=previous.customer_id, plan_id=previous.plan_id, variant_id=previous.variant_id, quantity=previous.quantity, tax_rate_percent=previous.tax_rate_percent, status="active", number=f"SUB-{now:%Y%m%d%H%M%S}-{previous.customer_id}", started_at=now, next_billing_at=now, current_period_end=add_interval(now, previous.plan.interval), renewed_from_id=previous.id)
     db.add(renewed)
     db.flush()
     invoice, _ = issue_invoice_for_subscription(db, renewed, now, now=now)
